@@ -24,7 +24,7 @@ load_dotenv(_env_local if _env_local.exists() else _env_parent)
 
 # ── LLM 설정 ─────────────────────────────────────────────────
 LLM_BASE_URL: str = os.environ.get("LLM_BASE_URL", "https://ollama.jangmyun.dev/v1")
-LLM_MODEL: str = os.environ.get("LLM_MODEL", "qwen3:8b")
+LLM_MODEL: str = os.environ.get("LLM_MODEL", "gemini-3.1-flash-lite")
 EMBED_MODEL: str = os.environ.get("EMBED_MODEL", "nomic-embed-text")
 LLM_API_KEY: str = os.environ.get("LLM_API_KEY", "ollama")
 GOOGLE_API_KEY: str = os.environ.get("GOOGLE_API_KEY", "")

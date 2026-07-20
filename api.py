@@ -334,7 +334,7 @@ async def run_pipeline(req: RunRequest):
     q: std_queue.Queue = std_queue.Queue()
 
     async def stream():
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         fut = loop.run_in_executor(None, _run_pipeline, req, q)
         while True:
             try:

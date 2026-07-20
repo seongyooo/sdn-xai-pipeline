@@ -6,7 +6,7 @@ End-to-End XAI SDN Pipeline
 
 사용법:
     python main.py --intent "block all traffic from 10.0.0.1 to 10.0.0.4 on switch 1"
-    python main.py --intent "..." --model gemini-2.0-flash --skip-twin
+    python main.py --intent "..." --model gemini-3.1-flash-lite --skip-twin
     python main.py --intent "..." --rag-k 5 --verbose
     python main.py --intent "..." --skip-twin --skip-deploy
 """
