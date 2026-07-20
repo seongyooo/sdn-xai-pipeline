@@ -642,6 +642,16 @@ body {
 }
 .preset-item:last-child { border-bottom: none; }
 .preset-item:hover { background: #1f2937; color: #f9fafb; }
+.preset-group-label {
+  padding: 6px 14px 3px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #4b5563;
+  text-transform: uppercase;
+  border-bottom: 1px solid #1f2937;
+  cursor: default;
+}
 
 /* ── Topology Editor ──────────────────────────────────────── */
 .topo-mode-btn {

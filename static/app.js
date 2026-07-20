@@ -65,6 +65,270 @@ const TOPOLOGY_PRESETS = {
       { id: 'l6', source: 'h3', target: 's3', bw: 100 },
     ],
   },
+
+  // ── 추가 프리셋 ────────────────────────────────────────────────────────────
+
+  // Spine-Leaf: 현대 데이터센터 표준 구조
+  // 2 Spine (완전 연결) × 4 Leaf, 각 Leaf에 호스트 2개
+  'spine-leaf': {
+    label: 'Spine-Leaf',
+    switches: [
+      { id: 's1', label: 'S1', dpid: '0000000000000001', x: 110, y: 70  }, // Spine
+      { id: 's2', label: 'S2', dpid: '0000000000000002', x: 230, y: 70  }, // Spine
+      { id: 's3', label: 'S3', dpid: '0000000000000003', x: 40,  y: 175 }, // Leaf
+      { id: 's4', label: 'S4', dpid: '0000000000000004', x: 125, y: 175 }, // Leaf
+      { id: 's5', label: 'S5', dpid: '0000000000000005', x: 210, y: 175 }, // Leaf
+      { id: 's6', label: 'S6', dpid: '0000000000000006', x: 300, y: 175 }, // Leaf
+    ],
+    hosts: [
+      { id: 'h1', label: 'H1', ip: '10.0.0.1', mac: '00:00:00:00:00:01', x: 18,  y: 255 },
+      { id: 'h2', label: 'H2', ip: '10.0.0.2', mac: '00:00:00:00:00:02', x: 65,  y: 255 },
+      { id: 'h3', label: 'H3', ip: '10.0.0.3', mac: '00:00:00:00:00:03', x: 100, y: 255 },
+      { id: 'h4', label: 'H4', ip: '10.0.0.4', mac: '00:00:00:00:00:04', x: 150, y: 255 },
+      { id: 'h5', label: 'H5', ip: '10.0.0.5', mac: '00:00:00:00:00:05', x: 185, y: 255 },
+      { id: 'h6', label: 'H6', ip: '10.0.0.6', mac: '00:00:00:00:00:06', x: 235, y: 255 },
+      { id: 'h7', label: 'H7', ip: '10.0.0.7', mac: '00:00:00:00:00:07', x: 275, y: 255 },
+      { id: 'h8', label: 'H8', ip: '10.0.0.8', mac: '00:00:00:00:00:08', x: 325, y: 255 },
+    ],
+    links: [
+      // Each spine → all leaves (full bipartite)
+      { id: 'l1',  source: 's1', target: 's3', bw: 40 },
+      { id: 'l2',  source: 's1', target: 's4', bw: 40 },
+      { id: 'l3',  source: 's1', target: 's5', bw: 40 },
+      { id: 'l4',  source: 's1', target: 's6', bw: 40 },
+      { id: 'l5',  source: 's2', target: 's3', bw: 40 },
+      { id: 'l6',  source: 's2', target: 's4', bw: 40 },
+      { id: 'l7',  source: 's2', target: 's5', bw: 40 },
+      { id: 'l8',  source: 's2', target: 's6', bw: 40 },
+      // Leaf → hosts (2 per leaf)
+      { id: 'l9',  source: 's3', target: 'h1', bw: 1 },
+      { id: 'l10', source: 's3', target: 'h2', bw: 1 },
+      { id: 'l11', source: 's4', target: 'h3', bw: 1 },
+      { id: 'l12', source: 's4', target: 'h4', bw: 1 },
+      { id: 'l13', source: 's5', target: 'h5', bw: 1 },
+      { id: 'l14', source: 's5', target: 'h6', bw: 1 },
+      { id: 'l15', source: 's6', target: 'h7', bw: 1 },
+      { id: 'l16', source: 's6', target: 'h8', bw: 1 },
+    ],
+  },
+
+  // Fat-Tree (k=4, 2-pod simplified): 대규모 데이터센터 고대역폭 구조
+  // Core 2개 × Agg 4개(팟당 2) × Edge 4개(팟당 2), 호스트 8개
+  'fat-tree': {
+    label: 'Fat-Tree',
+    switches: [
+      { id: 's1',  label: 'S1',  dpid: '0000000000000001', x: 120, y: 35  }, // Core
+      { id: 's2',  label: 'S2',  dpid: '0000000000000002', x: 220, y: 35  }, // Core
+      { id: 's3',  label: 'S3',  dpid: '0000000000000003', x: 65,  y: 115 }, // Pod1-Agg
+      { id: 's4',  label: 'S4',  dpid: '0000000000000004', x: 145, y: 115 }, // Pod1-Agg
+      { id: 's5',  label: 'S5',  dpid: '0000000000000005', x: 200, y: 115 }, // Pod2-Agg
+      { id: 's6',  label: 'S6',  dpid: '0000000000000006', x: 275, y: 115 }, // Pod2-Agg
+      { id: 's7',  label: 'S7',  dpid: '0000000000000007', x: 50,  y: 200 }, // Pod1-Edge
+      { id: 's8',  label: 'S8',  dpid: '0000000000000008', x: 140, y: 200 }, // Pod1-Edge
+      { id: 's9',  label: 'S9',  dpid: '0000000000000009', x: 200, y: 200 }, // Pod2-Edge
+      { id: 's10', label: 'S10', dpid: '000000000000000a', x: 290, y: 200 }, // Pod2-Edge
+    ],
+    hosts: [
+      { id: 'h1', label: 'H1', ip: '10.0.0.1', mac: '00:00:00:00:00:01', x: 25,  y: 265 },
+      { id: 'h2', label: 'H2', ip: '10.0.0.2', mac: '00:00:00:00:00:02', x: 75,  y: 265 },
+      { id: 'h3', label: 'H3', ip: '10.0.0.3', mac: '00:00:00:00:00:03', x: 115, y: 265 },
+      { id: 'h4', label: 'H4', ip: '10.0.0.4', mac: '00:00:00:00:00:04', x: 165, y: 265 },
+      { id: 'h5', label: 'H5', ip: '10.0.0.5', mac: '00:00:00:00:00:05', x: 175, y: 265 },
+      { id: 'h6', label: 'H6', ip: '10.0.0.6', mac: '00:00:00:00:00:06', x: 225, y: 265 },
+      { id: 'h7', label: 'H7', ip: '10.0.0.7', mac: '00:00:00:00:00:07', x: 265, y: 265 },
+      { id: 'h8', label: 'H8', ip: '10.0.0.8', mac: '00:00:00:00:00:08', x: 315, y: 265 },
+    ],
+    links: [
+      // Core → Aggregation (cross-pod connections)
+      { id: 'l1',  source: 's1', target: 's3', bw: 40 },
+      { id: 'l2',  source: 's1', target: 's5', bw: 40 },
+      { id: 'l3',  source: 's2', target: 's4', bw: 40 },
+      { id: 'l4',  source: 's2', target: 's6', bw: 40 },
+      // Aggregation → Edge (within pod)
+      { id: 'l5',  source: 's3', target: 's7',  bw: 10 },
+      { id: 'l6',  source: 's3', target: 's8',  bw: 10 },
+      { id: 'l7',  source: 's4', target: 's7',  bw: 10 },
+      { id: 'l8',  source: 's4', target: 's8',  bw: 10 },
+      { id: 'l9',  source: 's5', target: 's9',  bw: 10 },
+      { id: 'l10', source: 's5', target: 's10', bw: 10 },
+      { id: 'l11', source: 's6', target: 's9',  bw: 10 },
+      { id: 'l12', source: 's6', target: 's10', bw: 10 },
+      // Edge → hosts
+      { id: 'l13', source: 's7',  target: 'h1', bw: 1 },
+      { id: 'l14', source: 's7',  target: 'h2', bw: 1 },
+      { id: 'l15', source: 's8',  target: 'h3', bw: 1 },
+      { id: 'l16', source: 's8',  target: 'h4', bw: 1 },
+      { id: 'l17', source: 's9',  target: 'h5', bw: 1 },
+      { id: 'l18', source: 's9',  target: 'h6', bw: 1 },
+      { id: 'l19', source: 's10', target: 'h7', bw: 1 },
+      { id: 'l20', source: 's10', target: 'h8', bw: 1 },
+    ],
+  },
+
+  // Tree (3-level binary): 전통적 계층형 캠퍼스/기업망
+  // Root 1 → Aggregation 2 → Edge 4, 호스트 8개
+  tree: {
+    label: 'Tree',
+    switches: [
+      { id: 's1', label: 'S1', dpid: '0000000000000001', x: 170, y: 40  }, // Root
+      { id: 's2', label: 'S2', dpid: '0000000000000002', x: 90,  y: 120 }, // Agg
+      { id: 's3', label: 'S3', dpid: '0000000000000003', x: 250, y: 120 }, // Agg
+      { id: 's4', label: 'S4', dpid: '0000000000000004', x: 45,  y: 205 }, // Edge
+      { id: 's5', label: 'S5', dpid: '0000000000000005', x: 135, y: 205 }, // Edge
+      { id: 's6', label: 'S6', dpid: '0000000000000006', x: 205, y: 205 }, // Edge
+      { id: 's7', label: 'S7', dpid: '0000000000000007', x: 295, y: 205 }, // Edge
+    ],
+    hosts: [
+      { id: 'h1', label: 'H1', ip: '10.0.0.1', mac: '00:00:00:00:00:01', x: 20,  y: 275 },
+      { id: 'h2', label: 'H2', ip: '10.0.0.2', mac: '00:00:00:00:00:02', x: 70,  y: 275 },
+      { id: 'h3', label: 'H3', ip: '10.0.0.3', mac: '00:00:00:00:00:03', x: 110, y: 275 },
+      { id: 'h4', label: 'H4', ip: '10.0.0.4', mac: '00:00:00:00:00:04', x: 160, y: 275 },
+      { id: 'h5', label: 'H5', ip: '10.0.0.5', mac: '00:00:00:00:00:05', x: 180, y: 275 },
+      { id: 'h6', label: 'H6', ip: '10.0.0.6', mac: '00:00:00:00:00:06', x: 230, y: 275 },
+      { id: 'h7', label: 'H7', ip: '10.0.0.7', mac: '00:00:00:00:00:07', x: 270, y: 275 },
+      { id: 'h8', label: 'H8', ip: '10.0.0.8', mac: '00:00:00:00:00:08', x: 320, y: 275 },
+    ],
+    links: [
+      { id: 'l1',  source: 's1', target: 's2', bw: 40 },
+      { id: 'l2',  source: 's1', target: 's3', bw: 40 },
+      { id: 'l3',  source: 's2', target: 's4', bw: 10 },
+      { id: 'l4',  source: 's2', target: 's5', bw: 10 },
+      { id: 'l5',  source: 's3', target: 's6', bw: 10 },
+      { id: 'l6',  source: 's3', target: 's7', bw: 10 },
+      { id: 'l7',  source: 's4', target: 'h1', bw: 1 },
+      { id: 'l8',  source: 's4', target: 'h2', bw: 1 },
+      { id: 'l9',  source: 's5', target: 'h3', bw: 1 },
+      { id: 'l10', source: 's5', target: 'h4', bw: 1 },
+      { id: 'l11', source: 's6', target: 'h5', bw: 1 },
+      { id: 'l12', source: 's6', target: 'h6', bw: 1 },
+      { id: 'l13', source: 's7', target: 'h7', bw: 1 },
+      { id: 'l14', source: 's7', target: 'h8', bw: 1 },
+    ],
+  },
+
+  // Full-Mesh: 스위치 간 완전 연결, 최대 경로 다양성
+  // 4 switches × 6 links (완전 그래프), 호스트 8개
+  'full-mesh': {
+    label: 'Full Mesh',
+    switches: [
+      { id: 's1', label: 'S1', dpid: '0000000000000001', x: 115, y: 95  },
+      { id: 's2', label: 'S2', dpid: '0000000000000002', x: 225, y: 95  },
+      { id: 's3', label: 'S3', dpid: '0000000000000003', x: 115, y: 195 },
+      { id: 's4', label: 'S4', dpid: '0000000000000004', x: 225, y: 195 },
+    ],
+    hosts: [
+      { id: 'h1', label: 'H1', ip: '10.0.0.1', mac: '00:00:00:00:00:01', x: 50,  y: 50  },
+      { id: 'h2', label: 'H2', ip: '10.0.0.2', mac: '00:00:00:00:00:02', x: 120, y: 28  },
+      { id: 'h3', label: 'H3', ip: '10.0.0.3', mac: '00:00:00:00:00:03', x: 220, y: 28  },
+      { id: 'h4', label: 'H4', ip: '10.0.0.4', mac: '00:00:00:00:00:04', x: 295, y: 50  },
+      { id: 'h5', label: 'H5', ip: '10.0.0.5', mac: '00:00:00:00:00:05', x: 295, y: 240 },
+      { id: 'h6', label: 'H6', ip: '10.0.0.6', mac: '00:00:00:00:00:06', x: 220, y: 260 },
+      { id: 'h7', label: 'H7', ip: '10.0.0.7', mac: '00:00:00:00:00:07', x: 120, y: 260 },
+      { id: 'h8', label: 'H8', ip: '10.0.0.8', mac: '00:00:00:00:00:08', x: 50,  y: 240 },
+    ],
+    links: [
+      // Full mesh (n=4 → 6 inter-switch links)
+      { id: 'l1',  source: 's1', target: 's2', bw: 10 },
+      { id: 'l2',  source: 's1', target: 's3', bw: 10 },
+      { id: 'l3',  source: 's1', target: 's4', bw: 10 },
+      { id: 'l4',  source: 's2', target: 's3', bw: 10 },
+      { id: 'l5',  source: 's2', target: 's4', bw: 10 },
+      { id: 'l6',  source: 's3', target: 's4', bw: 10 },
+      // 2 hosts per switch
+      { id: 'l7',  source: 's1', target: 'h1', bw: 1 },
+      { id: 'l8',  source: 's1', target: 'h2', bw: 1 },
+      { id: 'l9',  source: 's2', target: 'h3', bw: 1 },
+      { id: 'l10', source: 's2', target: 'h4', bw: 1 },
+      { id: 'l11', source: 's4', target: 'h5', bw: 1 },
+      { id: 'l12', source: 's4', target: 'h6', bw: 1 },
+      { id: 'l13', source: 's3', target: 'h7', bw: 1 },
+      { id: 'l14', source: 's3', target: 'h8', bw: 1 },
+    ],
+  },
+
+  // Campus: 3계층 기업 캠퍼스망 (Core→Distribution→Access), 이중 업링크
+  campus: {
+    label: 'Campus',
+    switches: [
+      { id: 's1', label: 'S1', dpid: '0000000000000001', x: 170, y: 45  }, // Core
+      { id: 's2', label: 'S2', dpid: '0000000000000002', x: 85,  y: 130 }, // Dist
+      { id: 's3', label: 'S3', dpid: '0000000000000003', x: 255, y: 130 }, // Dist
+      { id: 's4', label: 'S4', dpid: '0000000000000004', x: 45,  y: 220 }, // Access
+      { id: 's5', label: 'S5', dpid: '0000000000000005', x: 170, y: 220 }, // Access (dual uplink)
+      { id: 's6', label: 'S6', dpid: '0000000000000006', x: 295, y: 220 }, // Access
+    ],
+    hosts: [
+      { id: 'h1', label: 'H1', ip: '10.0.0.1', mac: '00:00:00:00:00:01', x: 15,  y: 295 },
+      { id: 'h2', label: 'H2', ip: '10.0.0.2', mac: '00:00:00:00:00:02', x: 75,  y: 295 },
+      { id: 'h3', label: 'H3', ip: '10.0.0.3', mac: '00:00:00:00:00:03', x: 135, y: 295 },
+      { id: 'h4', label: 'H4', ip: '10.0.0.4', mac: '00:00:00:00:00:04', x: 205, y: 295 },
+      { id: 'h5', label: 'H5', ip: '10.0.0.5', mac: '00:00:00:00:00:05', x: 265, y: 295 },
+      { id: 'h6', label: 'H6', ip: '10.0.0.6', mac: '00:00:00:00:00:06', x: 325, y: 295 },
+    ],
+    links: [
+      { id: 'l1',  source: 's1', target: 's2', bw: 40 },
+      { id: 'l2',  source: 's1', target: 's3', bw: 40 },
+      { id: 'l3',  source: 's2', target: 's4', bw: 10 },
+      { id: 'l4',  source: 's2', target: 's5', bw: 10 }, // S5 dual uplink ①
+      { id: 'l5',  source: 's3', target: 's5', bw: 10 }, // S5 dual uplink ②
+      { id: 'l6',  source: 's3', target: 's6', bw: 10 },
+      { id: 'l7',  source: 's4', target: 'h1', bw: 1 },
+      { id: 'l8',  source: 's4', target: 'h2', bw: 1 },
+      { id: 'l9',  source: 's5', target: 'h3', bw: 1 },
+      { id: 'l10', source: 's5', target: 'h4', bw: 1 },
+      { id: 'l11', source: 's6', target: 'h5', bw: 1 },
+      { id: 'l12', source: 's6', target: 'h6', bw: 1 },
+    ],
+  },
+
+  // WAN Backbone: 비균등 비대칭 백본망 (ISP/GÉANT 스타일)
+  // 8 PoP 스위치, 비규칙적 연결, 다양한 대역폭
+  wan: {
+    label: 'WAN Backbone',
+    switches: [
+      { id: 's1', label: 'S1', dpid: '0000000000000001', x: 80,  y: 75  }, // PoP-A
+      { id: 's2', label: 'S2', dpid: '0000000000000002', x: 220, y: 55  }, // PoP-B
+      { id: 's3', label: 'S3', dpid: '0000000000000003', x: 310, y: 145 }, // PoP-C
+      { id: 's4', label: 'S4', dpid: '0000000000000004', x: 195, y: 175 }, // PoP-D (hub)
+      { id: 's5', label: 'S5', dpid: '0000000000000005', x: 75,  y: 200 }, // PoP-E
+      { id: 's6', label: 'S6', dpid: '0000000000000006', x: 300, y: 260 }, // PoP-F
+      { id: 's7', label: 'S7', dpid: '0000000000000007', x: 160, y: 265 }, // PoP-G
+      { id: 's8', label: 'S8', dpid: '0000000000000008', x: 50,  y: 295 }, // PoP-H
+    ],
+    hosts: [
+      { id: 'h1', label: 'H1', ip: '10.0.0.1', mac: '00:00:00:00:00:01', x: 40,  y: 35  },
+      { id: 'h2', label: 'H2', ip: '10.0.0.2', mac: '00:00:00:00:00:02', x: 200, y: 18  },
+      { id: 'h3', label: 'H3', ip: '10.0.0.3', mac: '00:00:00:00:00:03', x: 330, y: 60  },
+      { id: 'h4', label: 'H4', ip: '10.0.0.4', mac: '00:00:00:00:00:04', x: 330, y: 280 },
+      { id: 'h5', label: 'H5', ip: '10.0.0.5', mac: '00:00:00:00:00:05', x: 160, y: 330 },
+      { id: 'h6', label: 'H6', ip: '10.0.0.6', mac: '00:00:00:00:00:06', x: 20,  y: 330 },
+      { id: 'h7', label: 'H7', ip: '10.0.0.7', mac: '00:00:00:00:00:07', x: 20,  y: 160 },
+      { id: 'h8', label: 'H8', ip: '10.0.0.8', mac: '00:00:00:00:00:08', x: 260, y: 210 },
+    ],
+    links: [
+      // Backbone (asymmetric, variable BW)
+      { id: 'l1',  source: 's1', target: 's2', bw: 100 },
+      { id: 'l2',  source: 's2', target: 's3', bw: 100 },
+      { id: 'l3',  source: 's2', target: 's4', bw: 40  },
+      { id: 'l4',  source: 's3', target: 's4', bw: 40  },
+      { id: 'l5',  source: 's3', target: 's6', bw: 40  },
+      { id: 'l6',  source: 's1', target: 's5', bw: 40  },
+      { id: 'l7',  source: 's4', target: 's5', bw: 10  },
+      { id: 'l8',  source: 's4', target: 's7', bw: 10  },
+      { id: 'l9',  source: 's5', target: 's7', bw: 10  },
+      { id: 'l10', source: 's5', target: 's8', bw: 10  },
+      { id: 'l11', source: 's6', target: 's7', bw: 10  },
+      // Host attachments (1 per PoP)
+      { id: 'l12', source: 's1', target: 'h1', bw: 1 },
+      { id: 'l13', source: 's2', target: 'h2', bw: 1 },
+      { id: 'l14', source: 's3', target: 'h3', bw: 1 },
+      { id: 'l15', source: 's6', target: 'h4', bw: 1 },
+      { id: 'l16', source: 's7', target: 'h5', bw: 1 },
+      { id: 'l17', source: 's8', target: 'h6', bw: 1 },
+      { id: 'l18', source: 's5', target: 'h7', bw: 1 },
+      { id: 'l19', source: 's4', target: 'h8', bw: 1 },
+    ],
+  },
 };
 
 const STAGE_DEFS = [
@@ -1326,9 +1590,37 @@ function startRefreshLoop() {
 
 // ── Digital Twin Visualization ────────────────────────────────────────────────
 
+function highlightPath(pathIds, color) {
+  if (!topoSvg) return;
+  clearPathHighlight();
+  const linkSel = topoSvg.select('.links').selectAll('line');
+  for (let i = 0; i < pathIds.length - 1; i++) {
+    const a = pathIds[i], b = pathIds[i + 1];
+    linkSel.filter(d => {
+      const s = String(typeof d.source === 'object' ? d.source.id : d.source);
+      const t = String(typeof d.target === 'object' ? d.target.id : d.target);
+      return (s === a && t === b) || (s === b && t === a);
+    })
+    .classed('path-active', true)
+    .attr('stroke', color)
+    .attr('stroke-width', 3)
+    .attr('stroke-opacity', 0.75);
+  }
+}
+
+function clearPathHighlight() {
+  if (!topoSvg) return;
+  topoSvg.select('.links').selectAll('line.path-active')
+    .classed('path-active', false)
+    .attr('stroke', '#374151')
+    .attr('stroke-width', 1.5)
+    .attr('stroke-opacity', 1);
+}
+
 function stopTwinViz() {
   twinAnimTimers.forEach(t => clearTimeout(t));
   twinAnimTimers = [];
+  clearPathHighlight();
   if (topoSvg) {
     topoSvg.selectAll('.twin-viz').remove();
     topoSvg.selectAll('.twin-node-indicator').remove();
@@ -1474,6 +1766,7 @@ function spawnPacket(layer, pathIds, color, durationMs, stopIdx) {
 
 function startPacketLoop(path, color, stopIdx) {
   if (!path || path.length < 2) return;
+  highlightPath(path, color);
   const totalMs = Math.min(1800, path.length * 450);
   const interval = 650;
 

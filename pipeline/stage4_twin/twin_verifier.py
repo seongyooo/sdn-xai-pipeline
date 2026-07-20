@@ -18,8 +18,88 @@ import re
 import subprocess
 import sys
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional
+
+# ── 스티어링 헬퍼 ────────────────────────────────────────────────────────────────
+_STEERING_COOKIE = "0xdeadbeef"
+
+
+def _device_id_to_sw_name(device_id: str, custom_data: Optional[dict]) -> Optional[str]:
+    """'of:0000000000000002' → 's2' (커스텀 토폴로지 기반, 없으면 숫자 변환)"""
+    if custom_data:
+        for sw in custom_data.get("switches", []):
+            if f"of:{sw.get('dpid', '')}" == device_id:
+                return sw["id"]
+    try:
+        n = int(device_id.replace("of:", ""), 16)
+        return f"s{n}"
+    except ValueError:
+        return None
+
+
+def _find_host_switch(host_id: str, custom_data: Optional[dict]) -> Optional[str]:
+    """host_id가 직접 연결된 스위치 이름 반환"""
+    if not custom_data:
+        return None
+    sw_ids = {sw["id"] for sw in custom_data.get("switches", [])}
+    for lnk in custom_data.get("links", []):
+        s, t = lnk["source"], lnk["target"]
+        if s == host_id and t in sw_ids:
+            return t
+        if t == host_id and s in sw_ids:
+            return s
+    return None
+
+
+def _bfs_sw_path(src_sw: str, dst_sw: str, custom_data: dict) -> list[str]:
+    """BFS로 스위치 간 최단 경로 반환 (스위치 이름 리스트)"""
+    sw_ids = {sw["id"] for sw in custom_data.get("switches", [])}
+    adj: dict[str, list[str]] = {s: [] for s in sw_ids}
+    for lnk in custom_data.get("links", []):
+        s, t = lnk["source"], lnk["target"]
+        if s in sw_ids and t in sw_ids:
+            adj[s].append(t)
+            adj[t].append(s)
+    q: deque[list[str]] = deque([[src_sw]])
+    visited = {src_sw}
+    while q:
+        path = q.popleft()
+        if path[-1] == dst_sw:
+            return path
+        for nb in adj.get(path[-1], []):
+            if nb not in visited:
+                visited.add(nb)
+                q.append(path + [nb])
+    return []
+
+
+def _find_mininet_port(net, sw_from: str, sw_to: str) -> Optional[int]:
+    """Mininet에서 sw_from → sw_to 방향의 OpenFlow 포트 번호 반환.
+
+    TCIntf는 .port 속성이 없으므로 OVSSwitch.ports 딕셔너리(intf→port)를
+    우선 사용하고, 없으면 인터페이스 이름('s1-eth2' → 2)에서 파싱한다.
+    """
+    sw_node = net.get(sw_from)
+    for link in net.links:
+        n1, n2 = link.intf1.node.name, link.intf2.node.name
+        if n1 == sw_from and n2 == sw_to:
+            intf = link.intf1
+        elif n2 == sw_from and n1 == sw_to:
+            intf = link.intf2
+        else:
+            continue
+
+        # OVSSwitch.ports: {intf → port_num}
+        if hasattr(sw_node, 'ports') and intf in sw_node.ports:
+            return sw_node.ports[intf]
+        # 이름 파싱 fallback: 's1-eth2' → 2
+        try:
+            return int(intf.name.split('eth')[-1])
+        except (ValueError, IndexError):
+            pass
+    return None
 
 
 @dataclass
@@ -248,6 +328,38 @@ class TwinVerifier:
                 )
 
             # ── 6. intent 동작 확인 ────────────────────────
+            # ── 6a. block 인텐트: 스티어링 룰로 경로 강제 ───────────────
+            # ONOS fwd 앱이 우선순위가 높거나 다른 경로를 선택하면 블록 스위치를
+            # 우회할 수 있으므로, block 인텐트일 때는 해당 스위치를 반드시 경유하도록
+            # 임시 OVS 스티어링 룰을 설치한 뒤 ping 검증을 수행한다.
+            steered_switches: list[str] = []
+            force_path: list[str] = []
+            if action == "block" and custom_data and src_ip and dst_ip:
+                block_sw_name = _device_id_to_sw_name(flow.get("deviceId", ""), custom_data)
+                src_sw_name   = _find_host_switch(src_host, custom_data)
+                if block_sw_name and src_sw_name:
+                    sw_path = _bfs_sw_path(src_sw_name, block_sw_name, custom_data)
+                    if len(sw_path) >= 2:
+                        force_path = [src_host] + sw_path
+                        self._log(
+                            f"   ↳ 검증 경로 강제: {' → '.join(force_path)}"
+                        )
+                        for i in range(len(sw_path) - 1):
+                            hop, nxt = sw_path[i], sw_path[i + 1]
+                            port = _find_mininet_port(net, hop, nxt)
+                            if port:
+                                sw_node = net.get(hop)
+                                sw_node.cmd(
+                                    f'ovs-ofctl add-flow {hop} '
+                                    f'"cookie={_STEERING_COOKIE},priority=55000,'
+                                    f'ip,nw_src={src_ip},nw_dst={dst_ip},'
+                                    f'actions=output:{port}" -O OpenFlow13'
+                                )
+                                steered_switches.append(hop)
+                        if steered_switches:
+                            time.sleep(1)
+
+            # ── 6b. intent 동작 확인 ────────────────────────────────────
             expect_reach = (action == "forward")
             if flow_proto in ("tcp", "udp") and flow_dst_port is not None:
                 proto_label = f"{flow_proto.upper()}/{flow_dst_port}"
@@ -271,6 +383,16 @@ class TwinVerifier:
             checks["intent_check"] = intent_ok
             evidence["intent_msg"] = intent_msg
             self._log(f"   {'✓' if intent_ok else '✗'} {intent_msg}")
+
+            # ── 6c. 스티어링 룰 제거 ──────────────────────────────────
+            for hop in steered_switches:
+                sw_node = net.get(hop)
+                sw_node.cmd(
+                    f'ovs-ofctl del-flows {hop} '
+                    f'"cookie={_STEERING_COOKIE}/-1" -O OpenFlow13'
+                )
+            if steered_switches:
+                self._log("   ↳ 스티어링 룰 제거 완료")
 
             # ── 7. 회귀 테스트 ───────────────────────────
             host_to_ip = {hid: ip for ip, hid in ip_to_host.items()}

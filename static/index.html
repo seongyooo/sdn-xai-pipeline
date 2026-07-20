@@ -127,9 +127,19 @@
           <div style="position:relative">
             <button id="topo-preset-btn" class="topo-mode-btn">⊞ Presets</button>
             <div id="topo-preset-menu" class="preset-menu">
-              <div class="preset-item" data-preset="diamond">◇ Diamond (s1–s4, h1–h4)</div>
-              <div class="preset-item" data-preset="linear">— Linear (s1–s2, h1–h2)</div>
-              <div class="preset-item" data-preset="ring">○ Ring (s1–s3, h1–h3)</div>
+              <div class="preset-group-label">Simple</div>
+              <div class="preset-item" data-preset="linear">— Linear (2SW · 2H)</div>
+              <div class="preset-item" data-preset="ring">○ Ring (3SW · 3H)</div>
+              <div class="preset-item" data-preset="diamond">◇ Diamond (4SW · 4H)</div>
+              <div class="preset-group-label">Data Center</div>
+              <div class="preset-item" data-preset="spine-leaf">⊟ Spine-Leaf (6SW · 8H)</div>
+              <div class="preset-item" data-preset="fat-tree">⊞ Fat-Tree (10SW · 8H)</div>
+              <div class="preset-group-label">Enterprise</div>
+              <div class="preset-item" data-preset="tree">△ Tree (7SW · 8H)</div>
+              <div class="preset-item" data-preset="campus">⬡ Campus (6SW · 6H)</div>
+              <div class="preset-item" data-preset="full-mesh">⬡ Full Mesh (4SW · 8H)</div>
+              <div class="preset-group-label">WAN</div>
+              <div class="preset-item" data-preset="wan">≋ WAN Backbone (8SW · 8H)</div>
             </div>
           </div>
           <button id="topo-edit-btn" class="topo-mode-btn">Edit</button>
@@ -205,6 +215,6 @@
   </aside>
 
 </div>
-<script src="app.js?v=18"></script>
+<script src="app.js?v=20"></script>
 </body>
 </html>
