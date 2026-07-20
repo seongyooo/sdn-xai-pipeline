@@ -246,6 +246,7 @@ async function fetchTopology() {
 
     updateTopology(data);
     updateMetrics(data);
+    updateHostLegend(data);
     updateFlowTable(data);
   } catch {
     // 네트워크 오류 — 이전 데이터 유지
@@ -417,6 +418,26 @@ function updateMetrics(data) {
   document.getElementById('metric-rules').textContent    = data.rule_count ?? '—';
 }
 
+function updateHostLegend(data) {
+  const body = document.getElementById('host-legend-body');
+  if (!body) return;
+  const hosts = (data.nodes || []).filter(n => n.type === 'host' && n.ip);
+  if (hosts.length === 0) {
+    body.innerHTML = '<div style="color:#4b5563;font-size:11px;padding:4px 8px">No host info</div>';
+    return;
+  }
+  body.innerHTML = hosts.map(h => {
+    const label = h.label || h.id;
+    const mac   = h.mac ? `<span class="host-legend-mac">${h.mac}</span>` : '';
+    return `<div class="host-legend-row">
+      <span class="host-legend-dot"></span>
+      <span class="host-legend-label">${label}</span>
+      <span class="host-legend-ip">${h.ip}</span>
+      ${mac}
+    </div>`;
+  }).join('');
+}
+
 function updateFlowTable(data) {
   const body = document.getElementById('flow-table-body');
   const rows = data.flow_table || [];
@@ -562,6 +583,7 @@ function _renderEditorSnapshot() {
 
   updateTopology(data);
   updateMetrics(data);
+  updateHostLegend(data);
   updateFlowTable(data);
 }
 
@@ -887,7 +909,7 @@ function handleEditorNodeClick(d) {
 function editorAddNode(type, x, y) {
   editorPushHistory();
   const id  = editorNewId(type);
-  const num = type === 'switch' ? editor._cnt.s - 1 : editor._cnt.h - 1;
+  const num = parseInt(id.replace(/\D/g, ''), 10);
   const node = { id, label: type === 'switch' ? `S${num}` : `H${num}`, type, x, y };
   if (type === 'switch') {
     node.dpid = `0000000000000000${num}`.slice(-16);
@@ -1501,12 +1523,17 @@ function setTwinPhase(phase) {
       if (path) startPacketLoop(path, '#10b981', undefined);
     }
   } else if (phase === 'regression') {
-    // Dimmed blue packets on a different pair if available
-    const otherHost = currentTopoNodes.find(
+    // Animate between two hosts that are neither src nor dst
+    // (mirrors twin_verifier's regression pair: ids[1] ↔ ids[2])
+    const others = currentTopoNodes.filter(
       n => n.type === 'host' && n.id !== (srcNode?.id) && n.id !== (dstNode?.id)
     );
-    if (otherHost && dstNode) {
-      const path = findTopoPath(otherHost.id, dstNode.id);
+    if (others.length >= 2) {
+      const path = findTopoPath(others[0].id, others[1].id);
+      if (path) startPacketLoop(path, '#818cf8', undefined);
+    } else if (others.length === 1 && srcNode) {
+      // Only one other host — animate to srcNode as fallback
+      const path = findTopoPath(others[0].id, srcNode.id);
       if (path) startPacketLoop(path, '#818cf8', undefined);
     }
   }

@@ -71,6 +71,18 @@ Field rules (for valid intents):
 - src_ip/dst_ip must be numeric IPv4 (x.x.x.x), never a hostname
 - For sfc: set out_port to the waypoint port number mentioned (e.g. "port 9" → 9)
 - For reroute: set out_port to the new egress port mentioned
+
+IMPORTANT — src_ip and dst_ip requirements:
+- For action=block and action=forward, BOTH src_ip AND dst_ip must be explicitly specified in the intent.
+  If either is missing or ambiguous, reject with reason "ambiguous" and ask the user to specify the missing IP.
+  Example rejections:
+    "block all traffic on switch 4"     → ambiguous (no src_ip, no dst_ip)
+    "block traffic from 10.0.0.1"       → ambiguous (no dst_ip)
+    "block traffic to switch 4"         → ambiguous (no src_ip, no dst_ip — switch is a device, not a host)
+  Example valid:
+    "block all traffic from 10.0.0.1 to 10.0.0.4 on switch 4"  → accepted
+- For action=qos, src_ip and dst_ip are recommended but not strictly required.
+- Do NOT infer or guess src_ip/dst_ip from context. If not stated, reject.
 - Respond in JSON only, no explanation."""
 
 
