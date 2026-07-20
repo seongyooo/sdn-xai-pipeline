@@ -381,8 +381,15 @@ const TOOL_HINTS = {
 };
 
 function editorNewId(type) {
-  if (type === 'switch') return `s${editor._cnt.s++}`;
-  if (type === 'host')   return `h${editor._cnt.h++}`;
+  // For switches and hosts: scan from 1 to find the first unused number.
+  // This ensures new nodes start from s1/h1 even when existing ones are s5–s8.
+  if (type === 'switch' || type === 'host') {
+    const prefix = type === 'switch' ? 's' : 'h';
+    const existingIds = new Set(editor.nodes.map(n => n.id));
+    let n = 1;
+    while (existingIds.has(`${prefix}${n}`)) n++;
+    return `${prefix}${n}`;
+  }
   return `l${editor._cnt.l++}`;
 }
 
@@ -490,8 +497,8 @@ async function loadEditorData() {
 function importCustomData(data) {
   const allSw = (data.switches || []);
   const allH  = (data.hosts   || []);
-  editor._cnt.s = allSw.length + 1;
-  editor._cnt.h = allH.length  + 1;
+  // _cnt.s/_cnt.h are no longer used for switch/host IDs (editorNewId scans from 1).
+  // Keep _cnt.l for link IDs since those are internal-only.
   editor._cnt.l = (data.links || []).length + 1;
 
   editor.nodes = [
