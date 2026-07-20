@@ -2,6 +2,71 @@
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
+const TOPOLOGY_PRESETS = {
+  diamond: {
+    label: 'Diamond',
+    switches: [
+      { id: 's1', label: 'S1', dpid: '0000000000000001', x: 170, y: 80  },
+      { id: 's2', label: 'S2', dpid: '0000000000000002', x: 85,  y: 165 },
+      { id: 's3', label: 'S3', dpid: '0000000000000003', x: 255, y: 165 },
+      { id: 's4', label: 'S4', dpid: '0000000000000004', x: 170, y: 245 },
+    ],
+    hosts: [
+      { id: 'h1', label: 'H1', ip: '10.0.0.1', mac: '00:00:00:00:00:01', x: 170, y: 24  },
+      { id: 'h2', label: 'H2', ip: '10.0.0.2', mac: '00:00:00:00:00:02', x: 24,  y: 160 },
+      { id: 'h3', label: 'H3', ip: '10.0.0.3', mac: '00:00:00:00:00:03', x: 316, y: 160 },
+      { id: 'h4', label: 'H4', ip: '10.0.0.4', mac: '00:00:00:00:00:04', x: 170, y: 268 },
+    ],
+    links: [
+      { id: 'l1', source: 's1', target: 's2', bw: 10 },
+      { id: 'l2', source: 's1', target: 's3', bw: 10 },
+      { id: 'l3', source: 's2', target: 's4', bw: 10 },
+      { id: 'l4', source: 's3', target: 's4', bw: 10 },
+      { id: 'l5', source: 'h1', target: 's1', bw: 100 },
+      { id: 'l6', source: 'h2', target: 's2', bw: 100 },
+      { id: 'l7', source: 'h3', target: 's3', bw: 100 },
+      { id: 'l8', source: 'h4', target: 's4', bw: 100 },
+    ],
+  },
+  linear: {
+    label: 'Linear',
+    switches: [
+      { id: 's1', label: 'S1', dpid: '0000000000000001', x: 110, y: 140 },
+      { id: 's2', label: 'S2', dpid: '0000000000000002', x: 230, y: 140 },
+    ],
+    hosts: [
+      { id: 'h1', label: 'H1', ip: '10.0.0.1', mac: '00:00:00:00:00:01', x: 30,  y: 140 },
+      { id: 'h2', label: 'H2', ip: '10.0.0.2', mac: '00:00:00:00:00:02', x: 310, y: 140 },
+    ],
+    links: [
+      { id: 'l1', source: 'h1', target: 's1', bw: 100 },
+      { id: 'l2', source: 's1', target: 's2', bw: 10  },
+      { id: 'l3', source: 's2', target: 'h2', bw: 100 },
+    ],
+  },
+  ring: {
+    label: 'Ring',
+    switches: [
+      { id: 's1', label: 'S1', dpid: '0000000000000001', x: 170, y: 65  },
+      { id: 's2', label: 'S2', dpid: '0000000000000002', x: 80,  y: 210 },
+      { id: 's3', label: 'S3', dpid: '0000000000000003', x: 260, y: 210 },
+    ],
+    hosts: [
+      { id: 'h1', label: 'H1', ip: '10.0.0.1', mac: '00:00:00:00:00:01', x: 170, y: 20  },
+      { id: 'h2', label: 'H2', ip: '10.0.0.2', mac: '00:00:00:00:00:02', x: 25,  y: 230 },
+      { id: 'h3', label: 'H3', ip: '10.0.0.3', mac: '00:00:00:00:00:03', x: 315, y: 230 },
+    ],
+    links: [
+      { id: 'l1', source: 's1', target: 's2', bw: 10  },
+      { id: 'l2', source: 's2', target: 's3', bw: 10  },
+      { id: 'l3', source: 's3', target: 's1', bw: 10  },
+      { id: 'l4', source: 'h1', target: 's1', bw: 100 },
+      { id: 'l5', source: 'h2', target: 's2', bw: 100 },
+      { id: 'l6', source: 'h3', target: 's3', bw: 100 },
+    ],
+  },
+};
+
 const STAGE_DEFS = [
   { num: 1, name: '① Intent Parsing' },
   { num: 2, name: '② FlowRule Compile' },
@@ -32,6 +97,7 @@ const state = {
   decisionReport: null,
   history: [],
   refreshIn: 1,
+  twinActive: false,
 };
 
 // ── Pipeline ──────────────────────────────────────────────────────────────────
@@ -106,7 +172,22 @@ function handleSSEEvent(ev) {
     if (ev.error != null) s.result = { error: ev.error };
     // 에러 단계는 자동으로 펼쳐서 즉시 확인 가능하게
     if (ev.status === 'error') s.expanded = true;
+    // Digital Twin 단계: 실행 시 자동 확장 + 토폴로지 freeze 제어
+    if (ev.stage === 4) {
+      if (ev.status === 'running') {
+        s.expanded = true;
+        state.twinActive = true;
+      } else {
+        state.twinActive = false;
+        // twin 종료 후 즉시 실제 토폴로지로 복원
+        topoSnapshot = null;
+        fetchTopology();
+      }
+    }
     renderStage(ev.stage - 1);
+  } else if (ev.type === 'twin_info') {
+    // twin_info 이벤트는 현재 프론트엔드에서 별도 처리 없음
+    // (상세 정보는 stage 4 progress 로그에 이미 출력됨)
   } else if (ev.type === 'decision') {
     state.decision = ev.decision;
     state.decisionReport = ev.report;
@@ -139,6 +220,10 @@ async function fetchTopology() {
       if (!topoSnapshot) showTopoError(data.error);
       return;
     }
+
+    // Digital Twin 실행 중: Mininet 가상 스위치가 ONOS에 연결되어
+    // 토폴로지가 교란됨 → 표시 업데이트를 중단하고 이전 스냅샷 유지
+    if (state.twinActive) return;
 
     // 변경 감지: nodes/links/flow_table/rule_count만 비교 (D3 좌표 제외)
     const key = JSON.stringify({
@@ -1017,6 +1102,9 @@ function updateTopology(data) {
   const w = container.clientWidth  || 342;
   const h = container.clientHeight || 280;
 
+  // Always sync viewBox to current container size (handles fullscreen transitions)
+  topoSvg.attr('viewBox', `0 0 ${w} ${h}`);
+
   // Seed positions: prefer stored positions, then backend-provided x/y
   nodes.forEach(n => {
     const prev = nodePositions.get(n.id);
@@ -1250,6 +1338,108 @@ function init() {
     .then(r => r.ok ? r.json() : null)
     .then(data => { if (data && (data.switches || []).length > 0) updateExampleChips(data); })
     .catch(() => {});
+
+  // Sidebar collapse toggle
+  initSidebarToggle();
+
+  // Topology presets
+  initTopoPresets();
+}
+
+// ── Sidebar Toggle ────────────────────────────────────────────────────────────
+
+function initSidebarToggle() {
+  const btn     = document.getElementById('sidebar-toggle-btn');
+  const sidebar = document.getElementById('sidebar');
+  const stored  = localStorage.getItem('sidebar-collapsed') === 'true';
+
+  if (stored) {
+    sidebar.classList.add('collapsed');
+    btn.textContent = '▶';
+    btn.title = '사이드바 펼치기';
+  }
+
+  btn.addEventListener('click', () => {
+    const collapsed = sidebar.classList.toggle('collapsed');
+    btn.textContent = collapsed ? '▶' : '◀';
+    btn.title       = collapsed ? '사이드바 펼치기' : '사이드바 접기';
+    localStorage.setItem('sidebar-collapsed', collapsed);
+  });
+}
+
+// ── Topology Presets ──────────────────────────────────────────────────────────
+
+function initTopoPresets() {
+  const btn  = document.getElementById('topo-preset-btn');
+  const menu = document.getElementById('topo-preset-menu');
+
+  btn.addEventListener('click', e => {
+    e.stopPropagation();
+    menu.classList.toggle('open');
+  });
+
+  document.addEventListener('click', () => menu.classList.remove('open'));
+
+  menu.querySelectorAll('.preset-item').forEach(item => {
+    item.addEventListener('click', e => {
+      e.stopPropagation();
+      menu.classList.remove('open');
+      applyPreset(item.dataset.preset);
+    });
+  });
+}
+
+async function applyPreset(presetName) {
+  const preset = TOPOLOGY_PRESETS[presetName];
+  if (!preset) return;
+
+  const payload = {
+    switches: preset.switches,
+    hosts:    preset.hosts,
+    links:    preset.links,
+  };
+
+  const btn = document.getElementById('topo-preset-btn');
+  const orig = btn.textContent;
+  btn.textContent = '저장 중…';
+  btn.disabled = true;
+
+  try {
+    // 1. Save to custom topology file
+    await fetch('/api/topology/custom', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    // 2. Push to ONOS (best-effort)
+    try {
+      await fetch('/api/topology/apply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+    } catch (_) {}
+
+    // 3. Update intent chips and title flash
+    updateExampleChips(payload);
+
+    const titleEl = document.getElementById('topo-title');
+    if (titleEl) {
+      const prev = titleEl.textContent;
+      titleEl.textContent = `${preset.label} 프리셋 적용됨`;
+      setTimeout(() => { titleEl.textContent = prev; }, 3000);
+    }
+
+    // 4. Trigger immediate topology display refresh
+    fetchTopology();
+
+  } catch (err) {
+    console.error('[Preset] apply failed:', err);
+  }
+
+  btn.textContent = orig;
+  btn.disabled = false;
 }
 
 // ── Fullscreen ─────────────────────────────────────────────────────────────────
@@ -1261,10 +1451,16 @@ function toggleTopoFullscreen() {
   document.getElementById('topology-panel').classList.toggle('fullscreen', topoFullscreen);
   const btn = document.getElementById('topo-fullscreen-btn');
   if (btn) btn.textContent = topoFullscreen ? '⊡' : '⛶';
-  // Re-render after CSS transition (50ms) so SVG picks up new dimensions
+  // Re-render after CSS transition so SVG picks up new dimensions
   setTimeout(() => {
-    if (editor.active) renderEditorGraph();
-  }, 60);
+    if (editor.active) {
+      renderEditorGraph();
+    } else {
+      // Force live topology re-render with updated viewBox
+      topoSnapshot = null;
+      fetchTopology();
+    }
+  }, 80);
 }
 
 // ── Editor: undo stack ─────────────────────────────────────────────────────────

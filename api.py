@@ -243,11 +243,37 @@ def _run_pipeline(req: RunRequest, q: std_queue.Queue) -> None:
             if skip_reason:
                 progress(4, f"환경 조건 미충족 — {skip_reason}")
             else:
-                progress(4, "Mininet 토폴로지 구성 중...")
-                progress(4, "ONOS 컨트롤러 연결 중...")
-                progress(4, "FlowRule 배포 및 트래픽 검증 중...")
-            twin_result = verifier.verify(flowrule)
+                # 테스트 내용 사전 안내
+                _flows = flowrule.get("flows", [])
+                _flow  = _flows[0] if _flows else {}
+                _crit  = _flow.get("selector", {}).get("criteria", [])
+                _instr = _flow.get("treatment", {}).get("instructions", [])
+                _src   = next((c.get("ip","").split("/")[0] for c in _crit if c["type"]=="IPV4_SRC"), None)
+                _dst   = next((c.get("ip","").split("/")[0] for c in _crit if c["type"]=="IPV4_DST"), None)
+                _act   = "forward" if any(i.get("type")=="OUTPUT" for i in _instr) else "block"
+                _pnum  = next((c.get("protocol") for c in _crit if c["type"]=="IP_PROTO"), None)
+                _proto = {6:"TCP", 17:"UDP", 1:"ICMP"}.get(_pnum, "") if _pnum else ""
+                _port  = next((c.get("tcpPort") or c.get("udpPort") for c in _crit if c["type"] in ("TCP_DST","UDP_DST")), None)
+                _tdesc = f"{_src or '*'} → {_dst or '*'}"
+                if _proto: _tdesc += f"  [{_proto}"
+                if _port:  _tdesc += f"/{_port}"
+                if _proto: _tdesc += "]"
+
+                progress(4, f"테스트 트래픽: {_tdesc}")
+                progress(4, f"기대 동작: {'차단 (BLOCK)' if _act == 'block' else '전달 (FORWARD)'}")
+                progress(4, "─" * 36)
+
+                # twin_info SSE 이벤트 → 프론트엔드 오버레이 업데이트
+                emit({"type": "twin_info",
+                      "test": _tdesc,
+                      "action": _act})
+
+            twin_result = verifier.verify(
+                flowrule,
+                progress_cb=lambda msg: progress(4, msg),
+            )
             if twin_result.checks:
+                progress(4, "─" * 36)
                 for chk, ok in twin_result.checks.items():
                     progress(4, f"{'✓' if ok else '✗'} {chk}: {'통과' if ok else '실패'}")
         except Exception as exc:

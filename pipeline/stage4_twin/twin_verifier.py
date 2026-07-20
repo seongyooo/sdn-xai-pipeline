@@ -62,23 +62,31 @@ class TwinVerifier:
         self.controller_ip = controller_ip
         self.controller_port = controller_port
 
-    def verify(self, flowrule: dict) -> TwinResult:
+    def _log(self, msg: str) -> None:
+        """진행 상황을 서버 콘솔과 UI 콜백(있으면)에 동시 출력."""
+        print(f"    [Twin] {msg}")
+        if getattr(self, "_progress_cb", None):
+            self._progress_cb(msg)
+
+    def verify(self, flowrule: dict, progress_cb=None) -> TwinResult:
         """
         FlowRule을 Digital Twin에 배포하고 검증한다.
 
         검증 항목:
-          1. baseline_connectivity: h1→h4 기본 연결성 (flowrule 배포 전)
-          2. intent_check: flowrule의 의도 동작
-             - block이면 타겟 pair ping 실패 확인
-             - forward이면 타겟 pair ping 성공 확인
-          3. regression: 관련 없는 host pair (h2↔h3) 영향 없음
+          1. baseline_connectivity: FlowRule 배포 전 기본 연결성
+          2. intent_check: FlowRule의 의도 동작
+             - block이면 타겟 pair 차단 확인
+             - forward이면 타겟 pair 전달 확인
+          3. regression: 관련 없는 host pair 영향 없음
 
         Args:
-            flowrule: {"flows": [...]} 형식의 FlowRule dict
+            flowrule:    {"flows": [...]} 형식의 FlowRule dict
+            progress_cb: 진행 상황 UI 전달용 콜백 (str → None), 없으면 콘솔만
 
         Returns:
             TwinResult
         """
+        self._progress_cb = progress_cb
         # ── 플랫폼 체크 ────────────────────────────────────────
         skip_reason = self._check_platform()
         if skip_reason:
@@ -176,11 +184,11 @@ class TwinVerifier:
 
         try:
             # ── 1. ONOS 준비 대기 ──────────────────────────
-            print("    [Twin] ONOS 준비 대기 중...")
+            self._log("① ONOS 컨트롤러 준비 대기 중...")
             client.wait_until_ready(timeout=60.0)
 
             # ── 2. 필수 ONOS 앱 활성화 ────────────────────
-            print("    [Twin] ONOS OpenFlow 앱 활성화 중...")
+            self._log("② ONOS OpenFlow 앱 활성화 중...")
             for app in [
                 "org.onosproject.openflow-base",
                 "org.onosproject.openflow",
@@ -193,41 +201,43 @@ class TwinVerifier:
             time.sleep(2)
 
             # ── 3. 기존 flow 정리 ──────────────────────────
-            print("    [Twin] 기존 flow 정리 중...")
+            self._log("③ 기존 flow 정리 중...")
             client.clear_app_flows()
             time.sleep(1)
 
             # ── 4. Mininet 토폴로지 시작 ───────────────────
-            print("    [Twin] 잔존 Mininet 인터페이스 정리 중...")
+            self._log("④ 잔존 Mininet 인터페이스 정리 중...")
             subprocess.run(
                 ["mn", "-c"],
                 capture_output=True,
                 timeout=15,
             )
 
-            print("    [Twin] Mininet 토폴로지 시작 중...")
             if custom_data:
-                print(f"    [Twin] 커스텀 토폴로지 사용 ({len(custom_data.get('switches',[]))}SW / {len(custom_data.get('hosts',[]))}H)")
+                sw_cnt = len(custom_data.get("switches", []))
+                h_cnt  = len(custom_data.get("hosts", []))
+                self._log(f"④ Mininet 가상 네트워크 시작 중... (커스텀 토폴로지 {sw_cnt}SW/{h_cnt}H)")
                 net = build_network_from_custom(custom_data, self.controller_ip, self.controller_port)
             else:
+                self._log("④ Mininet 가상 네트워크 시작 중... (다이아몬드 기본 토폴로지)")
                 net = build_network(self.controller_ip, self.controller_port)
             net.start()
 
-            print("    [Twin] 디바이스 연결 대기 중...")
+            self._log("④ ONOS에 가상 스위치 연결 대기 중... (Live Topology에 가상 스위치가 표시됩니다)")
             client.wait_for_devices(expected_ids, timeout=90.0)
             time.sleep(3)
 
             # ── 5. baseline 연결성 확인 ────────────────────
-            # intent_check와 동일한 src_host 사용 (dst와 다른 호스트)
-            print("    [Twin] baseline 연결성 확인 중...")
+            self._log(f"⑤ [baseline] FlowRule 배포 전 연결성 확인: {src_host} → {baseline_dst_ip}")
             baseline_ok, baseline_msg = self._ping_check(
                 net, src_host, baseline_dst_ip, expect_reach=True
             )
             checks["baseline_connectivity"] = baseline_ok
             evidence["baseline_msg"] = baseline_msg
+            self._log(f"   {'✓' if baseline_ok else '✗'} {baseline_msg}")
 
             # ── 5. FlowRule 배포 ───────────────────────────
-            print("    [Twin] FlowRule 배포 중...")
+            self._log("⑥ FlowRule 가상 스위치에 배포 중...")
             client.deploy_flow_rules(flowrule)
             # 모든 flows가 OVS에 push될 때까지 대기 (B7 fix: flows[0]만 대기하던 버그)
             for f in flows:
@@ -238,28 +248,34 @@ class TwinVerifier:
                 )
 
             # ── 6. intent 동작 확인 ────────────────────────
-            # 프로토콜이 TCP/UDP + 포트가 명시된 룰이면 포트 연결 테스트,
-            # 그 외(ICMP 또는 무지정)는 ping 테스트
             expect_reach = (action == "forward")
             if flow_proto in ("tcp", "udp") and flow_dst_port is not None:
+                proto_label = f"{flow_proto.upper()}/{flow_dst_port}"
+                self._log(
+                    f"⑦ [intent] {'전달 확인' if expect_reach else '차단 확인'}: "
+                    f"{src_host} → {baseline_dst_ip}:{proto_label}"
+                )
                 intent_ok, intent_msg = self._port_check(
                     net, src_host, baseline_dst_ip,
                     proto=flow_proto, port=flow_dst_port,
                     expect_reach=expect_reach,
                 )
             else:
+                self._log(
+                    f"⑦ [intent] {'전달 확인' if expect_reach else '차단 확인'}: "
+                    f"{src_host} → {baseline_dst_ip} (ICMP)"
+                )
                 intent_ok, intent_msg = self._ping_check(
                     net, src_host, baseline_dst_ip, expect_reach=expect_reach
                 )
             checks["intent_check"] = intent_ok
             evidence["intent_msg"] = intent_msg
+            self._log(f"   {'✓' if intent_ok else '✗'} {intent_msg}")
 
             # ── 7. 회귀 테스트 ───────────────────────────
-            # primary_pair와 regression_pair가 동일하면 (호스트 2개 이하 토폴로지)
-            # 회귀 테스트가 intent 검증과 동일한 쌍을 검사하게 되어 항상 false-fail.
-            # 이 경우 회귀 테스트를 스킵하고 통과 처리한다.
             host_to_ip = {hid: ip for ip, hid in ip_to_host.items()}
             if regression_pair == primary_pair:
+                self._log("⑧ [regression] 독립 호스트 쌍 없음 — 스킵")
                 checks["regression"] = True
                 evidence["regression_msg"] = (
                     "회귀 테스트 스킵 — 독립적인 호스트 쌍 없음 "
@@ -267,11 +283,16 @@ class TwinVerifier:
                 )
             else:
                 regression_dst_ip = host_to_ip.get(regression_pair[1], "10.0.0.3")
+                self._log(
+                    f"⑧ [regression] 영향 없어야 할 쌍 확인: "
+                    f"{regression_pair[0]} → {regression_dst_ip}"
+                )
                 regression_ok, regression_msg = self._ping_check(
                     net, regression_pair[0], regression_dst_ip, expect_reach=True
                 )
                 checks["regression"] = regression_ok
                 evidence["regression_msg"] = regression_msg
+                self._log(f"   {'✓' if regression_ok else '✗'} {regression_msg}")
 
             # ── 판정 ──────────────────────────────────────
             all_passed = all(checks.values())
@@ -300,7 +321,7 @@ class TwinVerifier:
 
         finally:
             # ── 8. rollback ───────────────────────────────
-            print("    [Twin] FlowRule rollback 중...")
+            self._log("⑨ FlowRule rollback 중...")
             try:
                 priority = flow.get("priority")
                 if priority is not None:
@@ -312,7 +333,7 @@ class TwinVerifier:
 
             # ── 9. Mininet 종료 ───────────────────────────
             if net is not None:
-                print("    [Twin] Mininet 종료 중...")
+                self._log("⑩ Mininet 가상 네트워크 종료 중...")
                 try:
                     net.stop()
                 except Exception:

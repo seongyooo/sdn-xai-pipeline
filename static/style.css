@@ -39,6 +39,39 @@ body {
   flex-direction: column;
   padding: 20px 16px;
   overflow-y: auto;
+  transition: width 0.25s cubic-bezier(0.4,0,0.2,1),
+              padding 0.25s cubic-bezier(0.4,0,0.2,1);
+}
+#sidebar.collapsed {
+  width: 52px;
+  padding: 20px 12px;
+  overflow: hidden;
+}
+#sidebar.collapsed .sidebar-body { display: none; }
+#sidebar.collapsed .logo-text { display: none; }
+#sidebar.collapsed .sidebar-logo { justify-content: center; margin-bottom: 0; }
+#sidebar.collapsed #sidebar-toggle-btn { margin-left: 0; }
+
+#sidebar-toggle-btn {
+  margin-left: auto;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: #4b5563;
+  font-size: 13px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  line-height: 1;
+  transition: color 0.15s;
+}
+#sidebar-toggle-btn:hover { color: #9ca3af; }
+
+.sidebar-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
 }
 
 .sidebar-logo {
@@ -544,6 +577,33 @@ body {
   border-radius: 50%;
   flex-shrink: 0;
 }
+
+/* ── Topology Preset Menu ─────────────────────────────────── */
+.preset-menu {
+  display: none;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 5px);
+  background: #111827;
+  border: 1px solid #374151;
+  border-radius: 8px;
+  min-width: 200px;
+  z-index: 200;
+  overflow: hidden;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+}
+.preset-menu.open { display: block; }
+.preset-item {
+  padding: 9px 14px;
+  font-size: 12px;
+  font-family: 'JetBrains Mono', monospace;
+  color: #9ca3af;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+  border-bottom: 1px solid #1f2937;
+}
+.preset-item:last-child { border-bottom: none; }
+.preset-item:hover { background: #1f2937; color: #f9fafb; }
 
 /* ── Topology Editor ──────────────────────────────────────── */
 .topo-mode-btn {
