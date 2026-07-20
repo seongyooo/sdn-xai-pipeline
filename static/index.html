@@ -31,20 +31,21 @@
     <div class="sidebar-field">
       <div class="sidebar-field-label">Model</div>
       <select id="model-select" class="select">
+        <optgroup label="Gemini (API)">
+          <option value="gemini-3.1-flash" selected>gemini-3.1-flash</option>
+          <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite</option>
+          <option value="gemini-2.0-flash">gemini-2.0-flash</option>
+        </optgroup>
         <optgroup label="Ollama (Local)">
           <option value="qwen3:8b">qwen3:8b</option>
           <option value="gemma3:8b">gemma3:8b</option>
-        </optgroup>
-        <optgroup label="Gemini (API)">
-          <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite</option>
-          <option value="gemini-2.0-flash">gemini-2.0-flash</option>
         </optgroup>
       </select>
     </div>
     <div class="toggle-row">
       <span class="toggle-label">Enable RAG</span>
       <label class="toggle">
-        <input type="checkbox" id="toggle-rag" checked>
+        <input type="checkbox" id="toggle-rag">
         <span class="toggle-track"></span>
       </label>
     </div>
