@@ -116,15 +116,24 @@ class TwinVerifier:
         has_output = any(i.get("type") == "OUTPUT" for i in instructions)
         action = "forward" if has_output else "block"
 
-        # 타겟 pair 결정 (src_ip, dst_ip로 추정)
+        # 타겟 pair 결정 및 프로토콜/포트 추출
         criteria = flow.get("selector", {}).get("criteria", [])
         src_ip = None
         dst_ip = None
+        flow_proto = None   # "tcp" | "udp" | "icmp" | None
+        flow_dst_port = None  # int | None
         for c in criteria:
             if c["type"] == "IPV4_SRC":
                 src_ip = c.get("ip", "").split("/")[0]
             elif c["type"] == "IPV4_DST":
                 dst_ip = c.get("ip", "").split("/")[0]
+            elif c["type"] == "IP_PROTO":
+                proto_num = c.get("protocol")
+                flow_proto = {6: "tcp", 17: "udp", 1: "icmp"}.get(proto_num)
+            elif c["type"] == "TCP_DST":
+                flow_dst_port = c.get("tcpPort")
+            elif c["type"] == "UDP_DST":
+                flow_dst_port = c.get("udpPort")
 
         if src_ip is None and dst_ip is None:
             return TwinResult(
@@ -219,11 +228,19 @@ class TwinVerifier:
                 )
 
             # ── 6. intent 동작 확인 ────────────────────────
-            # block이면 ping 실패, forward이면 ping 성공
+            # 프로토콜이 TCP/UDP + 포트가 명시된 룰이면 포트 연결 테스트,
+            # 그 외(ICMP 또는 무지정)는 ping 테스트
             expect_reach = (action == "forward")
-            intent_ok, intent_msg = self._ping_check(
-                net, src_host, baseline_dst_ip, expect_reach=expect_reach
-            )
+            if flow_proto in ("tcp", "udp") and flow_dst_port is not None:
+                intent_ok, intent_msg = self._port_check(
+                    net, src_host, baseline_dst_ip,
+                    proto=flow_proto, port=flow_dst_port,
+                    expect_reach=expect_reach,
+                )
+            else:
+                intent_ok, intent_msg = self._ping_check(
+                    net, src_host, baseline_dst_ip, expect_reach=expect_reach
+                )
             checks["intent_check"] = intent_ok
             evidence["intent_msg"] = intent_msg
 
@@ -349,6 +366,80 @@ class TwinVerifier:
 
         except Exception as exc:
             return False, f"ping 실행 오류: {exc}"
+
+    def _port_check(
+        self,
+        net,
+        src_host: str,
+        dst_ip: str,
+        proto: str,
+        port: int,
+        expect_reach: bool,
+    ) -> tuple[bool, str]:
+        """
+        TCP/UDP 포트 연결 테스트.
+        Python socket으로 SYN을 보내고 응답을 확인한다.
+
+        - 연결 성공 (errno 0) 또는 연결 거부 (errno 111 ECONNREFUSED):
+            패킷이 목적지에 도달한 것 → reachable=True
+        - 타임아웃 (errno 110 ETIMEDOUT) 등:
+            패킷이 스위치에서 DROP된 것 → reachable=False
+
+        Args:
+            net: Mininet 객체
+            src_host: 소스 호스트 이름 (예: "h4")
+            dst_ip: 대상 IP 주소
+            proto: "tcp" 또는 "udp"
+            port: 대상 포트 번호
+            expect_reach: True이면 도달 가능해야 함
+
+        Returns:
+            (성공 여부, 설명 메시지)
+        """
+        try:
+            if not re.match(r"^[\d.]+$", dst_ip):
+                return False, f"잘못된 IP 형식: {dst_ip}"
+            port = int(port)
+
+            host = net.get(src_host)
+
+            # Python socket으로 TCP SYN 전송 후 응답 분류
+            # ECONNREFUSED(111): 패킷 도달, 서비스 없음 → reachable
+            # ETIMEDOUT(110) / 기타: DROP → not reachable
+            cmd = (
+                f"python3 -c \""
+                f"import socket,errno;"
+                f"s=socket.socket({'socket.AF_INET' if True else ''});"
+                f"s.settimeout(3);"
+                f"e=s.connect_ex(('{dst_ip}',{port}));"
+                f"s.close();"
+                f"print('REACHABLE' if e==0 or e==errno.ECONNREFUSED else 'BLOCKED')"
+                f"\""
+            )
+            host.sendCmd(cmd)
+            result = host.waitOutput()
+            reachable = "REACHABLE" in result
+
+            proto_label = f"{proto.upper()}/{port}"
+            if expect_reach:
+                success = reachable
+                msg = (
+                    f"{src_host}→{dst_ip}:{proto_label} 연결 가능 (예상: 도달 가능)"
+                    if success
+                    else f"{src_host}→{dst_ip}:{proto_label} 연결 실패 (예상: 도달 가능이어야 함)"
+                )
+            else:
+                success = not reachable
+                msg = (
+                    f"{src_host}→{dst_ip}:{proto_label} 차단됨 (예상: 차단)"
+                    if success
+                    else f"{src_host}→{dst_ip}:{proto_label} 통과됨 (예상: 차단이어야 함)"
+                )
+
+            return success, msg
+
+        except Exception as exc:
+            return False, f"포트 테스트 오류: {exc}"
 
     def _load_custom_topology(self) -> Optional[dict]:
         """
