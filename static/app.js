@@ -375,6 +375,7 @@ async function runPipeline() {
   state.stages.forEach(s => {
     s.status = 'idle'; s.elapsed = null; s.result = null; s.expanded = false; s.progress_log = [];
   });
+  document.getElementById('stages-section').style.display = 'flex';
   renderAllStages();
   renderDecision();
   setRunBtn(true);
@@ -529,6 +530,7 @@ async function loadHistory() {
 
 function buildStageCards() {
   const section = document.getElementById('stages-section');
+  section.style.display = 'none';
   section.innerHTML = '';
   STAGE_DEFS.forEach((def, i) => {
     const card = document.createElement('div');
@@ -735,6 +737,8 @@ function showTopoError(msg) {
 // ── D3 Topology ───────────────────────────────────────────────────────────────
 
 let topoSvg = null;
+let topoZoom = null;
+let topoZoomLayer = null;
 let simulation = null;
 const nodePositions = new Map(); // persist positions across refreshes
 let currentTopoNodes = []; // snapshot for twin viz (id, type, label, ip)
@@ -852,10 +856,10 @@ function _renderEditorSnapshot() {
 }
 
 function clearTopologyGraph() {
-  if (!topoSvg) return;
+  if (!topoSvg || !topoZoomLayer) return;
   if (simulation) { simulation.stop(); simulation = null; }
-  topoSvg.select('.links').selectAll('*').remove();
-  topoSvg.select('.nodes').selectAll('*').remove();
+  topoZoomLayer.select('.links').selectAll('*').remove();
+  topoZoomLayer.select('.nodes').selectAll('*').remove();
   topoSvg.selectAll('#ghost-link').remove();
   topoSvg.selectAll('#lasso-rect').remove();
   topoSvg.on('click', null).on('mousemove', null)
@@ -932,7 +936,7 @@ function setEditorTool(tool) {
   editor.tool = tool;
   editor.linking = null;
   if (topoSvg) {
-    topoSvg.select('#ghost-link').attr('opacity', 0);
+    topoZoomLayer.select('#ghost-link').attr('opacity', 0);
     const cur = { select: 'default', switch: 'crosshair', host: 'crosshair', link: 'crosshair', delete: 'not-allowed' };
     topoSvg.style('cursor', cur[tool] || 'default');
   }
@@ -955,8 +959,8 @@ function renderEditorGraph() {
   if (ph) ph.style.display = 'none';
 
   // Ghost link (drawn above everything)
-  if (topoSvg.select('#ghost-link').empty()) {
-    topoSvg.append('line')
+  if (topoZoomLayer.select('#ghost-link').empty()) {
+    topoZoomLayer.append('line')
       .attr('id', 'ghost-link')
       .attr('stroke', '#3b82f6')
       .attr('stroke-width', 1.5)
@@ -965,7 +969,7 @@ function renderEditorGraph() {
       .attr('pointer-events', 'none');
   }
 
-  // Lasso rect (Shift+drag delete)
+  // Lasso rect (Shift+drag delete) — stays outside zoom so it covers screen coords
   if (topoSvg.select('#lasso-rect').empty()) {
     topoSvg.insert('rect', ':first-child')
       .attr('id', 'lasso-rect')
@@ -975,16 +979,17 @@ function renderEditorGraph() {
   // SVG background interactions
   topoSvg.on('click', function(ev) {
     if (!editor.active) return;
-    // Ignore if click landed on a child element (node/link)
     if (ev.target !== this) return;
-    const [x, y] = d3.pointer(ev);
+    const t = d3.zoomTransform(topoSvg.node());
+    const [px, py] = d3.pointer(ev);
+    const [x, y] = t.invert([px, py]);
     if (editor.tool === 'switch') {
       editorAddNode('switch', x, y);
     } else if (editor.tool === 'host') {
       editorAddNode('host', x, y);
     } else if (editor.tool === 'link' && editor.linking) {
       editor.linking = null;
-      topoSvg.select('#ghost-link').attr('opacity', 0);
+      topoZoomLayer.select('#ghost-link').attr('opacity', 0);
       renderEditorGraph();
     } else {
       editor.selected = null;
@@ -1002,9 +1007,11 @@ function renderEditorGraph() {
     if (!editor.active || editor.tool !== 'link' || !editor.linking) return;
     const src = editor.nodes.find(n => n.id === editor.linking.sourceId);
     if (!src) return;
-    topoSvg.select('#ghost-link')
+    const t = d3.zoomTransform(topoSvg.node());
+    const [ix, iy] = t.invert([mx, my]);
+    topoZoomLayer.select('#ghost-link')
       .attr('x1', src.x).attr('y1', src.y)
-      .attr('x2', mx).attr('y2', my)
+      .attr('x2', ix).attr('y2', iy)
       .attr('opacity', 1);
   });
 
@@ -1027,7 +1034,7 @@ function renderEditorGraph() {
   });
 
   // ── Links ──
-  const linkGs = topoSvg.select('.links')
+  const linkGs = topoZoomLayer.select('.links')
     .selectAll('g.ed-link')
     .data(editor.links, d => d.id)
     .join(enter => {
@@ -1074,7 +1081,7 @@ function renderEditorGraph() {
       renderEditorGraph();
     });
 
-  const nodeGs = topoSvg.select('.nodes')
+  const nodeGs = topoZoomLayer.select('.nodes')
     .selectAll('g.ed-node')
     .data(editor.nodes, d => d.id)
     .join(enter => enter.append('g').attr('class', 'ed-node'))
@@ -1122,7 +1129,7 @@ function renderEditorGraph() {
   });
 
   // Keep ghost link on top
-  topoSvg.select('#ghost-link').raise();
+  topoZoomLayer.select('#ghost-link').raise();
 }
 
 function handleEditorNodeClick(d) {
@@ -1143,7 +1150,7 @@ function handleEditorNodeClick(d) {
     } else if (editor.linking.sourceId === d.id) {
       // Cancel link on same node
       editor.linking = null;
-      topoSvg.select('#ghost-link').attr('opacity', 0);
+      topoZoomLayer.select('#ghost-link').attr('opacity', 0);
       renderEditorGraph();
     } else {
       // Complete link — prevent duplicates
@@ -1158,7 +1165,7 @@ function handleEditorNodeClick(d) {
         editor.links.push({ id: editorNewId('link'), source: a, target: b, bw });
       }
       editor.linking = null;
-      topoSvg.select('#ghost-link').attr('opacity', 0);
+      topoZoomLayer.select('#ghost-link').attr('opacity', 0);
       renderEditorGraph();
     }
     return;
@@ -1349,24 +1356,70 @@ function updateExampleChips(topo) {
   const swLabel = s1.label?.toLowerCase() ?? s1.id;
   const swPhrase = `switch ${swLabel.replace(/\D/g, '') || 1}`;
 
+  const sw2 = switches.length >= 2 ? switches[1] : s1;
+  const sw2Phrase = `switch ${sw2.label?.toLowerCase().replace(/\D/g, '') || 2}`;
+  const sw3 = switches.length >= 3 ? switches[2] : s1;
+  const sw3Phrase = `switch ${sw3.label?.toLowerCase().replace(/\D/g, '') || 3}`;
+
+  const swNum  = swLabel.replace(/\D/g, '') || 1;
+  const sw2Num = sw2.label?.replace(/\D/g, '') || 2;
+  const sw3Num = sw3.label?.replace(/\D/g, '') || 3;
+  const swLast = switches[switches.length - 1].label?.replace(/\D/g, '') || switches.length;
+
   const chips = [
-    { t: `Block ${h1.ip}→${h2.ip}`,    i: `Block all traffic from ${h1.ip} to ${h2.ip} on ${swPhrase}` },
-    { t: `Block SSH to ${h1.ip}`,       i: `Block TCP traffic on port 22 destined for ${h1.ip} on ${swPhrase}` },
-    { t: `Forward ICMP→${h1.ip}`,       i: `Forward ICMP traffic destined for ${h1.ip} through port 3 on ${swPhrase}` },
-    { t: `Forward HTTP→${h2.ip}`,       i: `Forward TCP traffic on port 80 destined for ${h2.ip} via port 2 on ${swPhrase}` },
+    { t: `Block ${h1.ip}→${h2.ip}`,
+      i: `Block all traffic from ${h1.ip} to ${h2.ip} on ${swPhrase}`,
+      k: `[차단] 스위치 ${swNum}에서 ${h1.ip} → ${h2.ip} 모든 트래픽을 드롭합니다.` },
+    { t: `Block SSH to ${h1.ip}`,
+      i: `Block TCP traffic on port 22 destined for ${h1.ip} on ${swPhrase}`,
+      k: `[차단] 스위치 ${swNum}에서 ${h1.ip}로 향하는 SSH(TCP:22) 트래픽을 차단합니다.` },
+    { t: `Forward ICMP→${h1.ip}`,
+      i: `Forward ICMP traffic destined for ${h1.ip} through port 3 on ${swPhrase}`,
+      k: `[전달] 스위치 ${swNum}에서 ${h1.ip}로 향하는 ICMP(ping) 트래픽을 포트 3으로 내보냅니다.` },
+    { t: `Forward HTTP→${h2.ip}`,
+      i: `Forward TCP traffic on port 80 destined for ${h2.ip} via port 2 on ${swPhrase}`,
+      k: `[전달] 스위치 ${swNum}에서 ${h2.ip}:80(HTTP)으로 향하는 TCP 트래픽을 포트 2로 내보냅니다.` },
   ];
   if (hosts.length >= 4) {
     const h3 = hosts[2], h4 = hosts[3];
-    chips.push({ t: `QoS ${h1.ip}→${h4.ip}`, i: `Apply QoS for video streaming from ${h1.ip} to ${h4.ip} on ${swPhrase}` });
-    chips.push({ t: `Block ${h3.ip}→${h4.ip}`, i: `Block all traffic from ${h3.ip} to ${h4.ip} on switch ${switches[switches.length-1].label?.replace(/\D/g,'') || switches.length}` });
+    chips.push({
+      t: `QoS ${h1.ip}→${h4.ip}`,
+      i: `Apply QoS for video streaming from ${h1.ip} to ${h4.ip} on ${swPhrase}`,
+      k: `[QoS] 스위치 ${swNum}에서 ${h1.ip} → ${h4.ip} 영상 스트리밍 트래픽에 우선순위 큐를 적용합니다.`,
+    });
+    chips.push({
+      t: `Block ${h3.ip}→${h4.ip}`,
+      i: `Block all traffic from ${h3.ip} to ${h4.ip} on switch ${swLast}`,
+      k: `[차단] 스위치 ${swLast}에서 ${h3.ip} → ${h4.ip} 모든 트래픽을 드롭합니다.`,
+    });
+    chips.push({
+      t: `SFC: IDS ${h1.ip}→${h4.ip}`,
+      i: `Steer HTTP traffic from ${h1.ip} to ${h4.ip} through IDS at port 9, then forward out port 2 on ${sw2Phrase}`,
+      k: `[SFC] 스위치 ${sw2Num}에서 ${h1.ip}→${h4.ip} HTTP 트래픽을 포트 9의 IDS로 검사한 뒤, 포트 2로 목적지에 전달합니다.`,
+    });
+    chips.push({
+      t: `Reroute via ${sw3.label || 's3'}`,
+      i: `Reroute traffic from ${h2.ip} to ${h3.ip} via ${sw3Phrase} avoiding ${sw2Phrase} on ${swPhrase}`,
+      k: `[재경로] 스위치 ${swNum}에서 ${h2.ip}→${h3.ip} 트래픽을 스위치 ${sw2Num}을 우회하여 스위치 ${sw3Num} 경로로 재지정합니다.`,
+    });
+    chips.push({
+      t: `Compound: Allow HTTP, Block SSH`,
+      i: `Allow HTTP from ${h1.ip} to ${h2.ip} via port 2 on ${swPhrase}, but block SSH from ${h1.ip} to ${h2.ip} on ${swPhrase}`,
+      k: `[복합] ${swPhrase}에서 ${h1.ip}→${h2.ip} HTTP(TCP:80)는 포트 2로 허용하고, SSH(TCP:22)는 차단합니다.`,
+    });
+    chips.push({
+      t: `Compound: Multi-switch rules`,
+      i: `Forward HTTP from ${h1.ip} to ${h3.ip} via port 2 on ${swPhrase}, and block all traffic from ${h2.ip} to ${h4.ip} on ${sw2Phrase}`,
+      k: `[복합] ${swPhrase}에서 ${h1.ip}→${h3.ip} HTTP를 포트 2로 전달하고, ${sw2Phrase}에서 ${h2.ip}→${h4.ip}를 차단합니다.`,
+    });
   }
 
   const container = document.getElementById('example-chips');
   container.innerHTML = chips.map(c =>
-    `<div class="example-chip" data-intent="${escHtml(c.i)}">${escHtml(c.t)}</div>`
+    `<div class="example-chip" data-intent="${escHtml(c.i)}" data-kr="${escHtml(c.k)}">${escHtml(c.t)}</div>`
   ).join('');
   container.querySelectorAll('.example-chip').forEach(chip =>
-    chip.addEventListener('click', () => fillIntent(chip.dataset.intent))
+    chip.addEventListener('click', () => fillIntent(chip.dataset.intent, chip.dataset.kr))
   );
 }
 
@@ -1377,13 +1430,24 @@ function initTopology() {
 
   topoSvg = d3.select('#topology-graph')
     .append('svg')
-    .attr('width',   '100%')
-    .attr('height',  '100%')
-    .attr('viewBox', `0 0 ${w} ${h}`)
-    .attr('overflow', 'visible'); // allow twin labels near edges to show without clipping
+    .attr('width',  '100%')
+    .attr('height', '100%')
+    .attr('viewBox', `0 0 ${w} ${h}`);
 
-  topoSvg.append('g').attr('class', 'links');
-  topoSvg.append('g').attr('class', 'nodes');
+  topoZoomLayer = topoSvg.append('g').attr('class', 'zoom-layer');
+  topoZoomLayer.append('g').attr('class', 'links');
+  topoZoomLayer.append('g').attr('class', 'nodes');
+
+  topoZoom = d3.zoom()
+    .scaleExtent([0.2, 4])
+    .on('zoom', ev => topoZoomLayer.attr('transform', ev.transform));
+
+  topoSvg.call(topoZoom);
+
+  // Double-click to reset zoom
+  topoSvg.on('dblclick.zoom', () => {
+    topoSvg.transition().duration(300).call(topoZoom.transform, d3.zoomIdentity);
+  });
 }
 
 function updateTopology(data) {
@@ -1426,7 +1490,7 @@ function updateTopology(data) {
     .force('collision', d3.forceCollide(24));
 
   // Links
-  const link = topoSvg.select('.links')
+  const link = topoZoomLayer.select('.links')
     .selectAll('line')
     .data(links, d => `${d.source?.id ?? d.source}-${d.target?.id ?? d.target}`)
     .join('line')
@@ -1445,7 +1509,7 @@ function updateTopology(data) {
       d.fx = null; d.fy = null;
     });
 
-  const nodeG = topoSvg.select('.nodes')
+  const nodeG = topoZoomLayer.select('.nodes')
     .selectAll('g.live-node')
     .data(nodes, d => d.id)
     .join(enter => enter.append('g').attr('class', 'live-node'))
@@ -1483,6 +1547,10 @@ function updateTopology(data) {
   });
 
   simulation.on('tick', () => {
+    // Read live container size each tick so clamp follows panel resizes
+    const topoEl = document.getElementById('topology-graph');
+    const cw = topoEl ? topoEl.clientWidth  : w;
+    const ch = topoEl ? topoEl.clientHeight : h;
     link
       .attr('x1', d => d.source.x)
       .attr('y1', d => d.source.y)
@@ -1490,8 +1558,8 @@ function updateTopology(data) {
       .attr('y2', d => d.target.y);
     nodeG.attr('transform', d => {
       // clamp to svg bounds
-      const x = Math.max(20, Math.min(w - 20, d.x));
-      const y = Math.max(20, Math.min(h - 20, d.y));
+      const x = Math.max(20, Math.min(cw - 20, d.x));
+      const y = Math.max(20, Math.min(ch - 20, d.y));
       // Update continuously (not just on 'end') so twin packet paths
       // stay accurate while the user drags nodes
       nodePositions.set(d.id, { x, y });
@@ -1549,9 +1617,22 @@ function appendLogLine(stageNum, msg) {
   el.scrollTop = el.scrollHeight;
 }
 
-function fillIntent(text) {
+function fillIntent(text, kr) {
   state.intent = text;
   document.getElementById('intent-input').value = text;
+  if (kr) showIntentTranslation(kr);
+  else hideIntentTranslation();
+}
+
+function showIntentTranslation(kr) {
+  const el = document.getElementById('intent-translation');
+  el.innerHTML = `<div class="kr-label">한국어 설명</div>${escHtml(kr)}`;
+  el.classList.add('visible');
+}
+
+function hideIntentTranslation() {
+  const el = document.getElementById('intent-translation');
+  if (el) el.classList.remove('visible');
 }
 
 function setRunBtn(running) {
@@ -1581,8 +1662,6 @@ function startRefreshLoop() {
       await fetchTopology();
       topoFetching = false;
     }
-    const el = document.getElementById('refresh-countdown');
-    if (el) el.textContent = '↻ 1s';
     setTimeout(tick, 1000);
   }
   tick();
@@ -1593,7 +1672,7 @@ function startRefreshLoop() {
 function highlightPath(pathIds, color) {
   if (!topoSvg) return;
   clearPathHighlight();
-  const linkSel = topoSvg.select('.links').selectAll('line');
+  const linkSel = topoZoomLayer.select('.links').selectAll('line');
   for (let i = 0; i < pathIds.length - 1; i++) {
     const a = pathIds[i], b = pathIds[i + 1];
     linkSel.filter(d => {
@@ -1610,7 +1689,7 @@ function highlightPath(pathIds, color) {
 
 function clearPathHighlight() {
   if (!topoSvg) return;
-  topoSvg.select('.links').selectAll('line.path-active')
+  topoZoomLayer.select('.links').selectAll('line.path-active')
     .classed('path-active', false)
     .attr('stroke', '#374151')
     .attr('stroke-width', 1.5)
@@ -1840,14 +1919,17 @@ function init() {
 
   // Intent textarea
   const intentInput = document.getElementById('intent-input');
-  intentInput.addEventListener('input', e => { state.intent = e.target.value; });
+  intentInput.addEventListener('input', e => {
+    state.intent = e.target.value;
+    hideIntentTranslation();
+  });
 
   // Run button
   document.getElementById('run-btn').addEventListener('click', runPipeline);
 
   // Example chips
   document.querySelectorAll('.example-chip').forEach(chip => {
-    chip.addEventListener('click', () => fillIntent(chip.dataset.intent));
+    chip.addEventListener('click', () => fillIntent(chip.dataset.intent, chip.dataset.kr));
   });
 
   // Settings
@@ -1856,8 +1938,13 @@ function init() {
   document.getElementById('toggle-twin').addEventListener('change', e => { state.skipTwin  = e.target.checked; });
   document.getElementById('toggle-deploy').addEventListener('change', e => { state.skipDeploy = e.target.checked; });
 
+  // Layout swap (restore saved state)
+  if (localStorage.getItem('layout-swapped') === 'true') {
+    document.getElementById('app').classList.add('layout-swapped');
+  }
+  document.getElementById('layout-swap-btn').addEventListener('click', toggleLayoutSwap);
+
   // Topology editor controls
-  document.getElementById('topo-fullscreen-btn').addEventListener('click', toggleTopoFullscreen);
 
   document.getElementById('topo-edit-btn').addEventListener('click', () => {
     if (editor.active) {
@@ -1894,6 +1981,121 @@ function init() {
 
   // Topology presets
   initTopoPresets();
+
+  // Panel resizer
+  initPanelResizer();
+
+  // Initialize collapsible section max-heights
+  document.querySelectorAll('.topo-info-section').forEach(section => {
+    const body = section.querySelector('.topo-info-body');
+    if (body) body.style.maxHeight = body.scrollHeight + 'px';
+  });
+}
+
+// ── Panel Resizer ─────────────────────────────────────────────────────────────
+
+function initPanelResizer() {
+  const resizer = document.getElementById('panel-resizer');
+  const panel   = document.getElementById('topology-panel');
+  if (!resizer || !panel) return;
+
+  let startX, startWidth;
+
+  resizer.addEventListener('mousedown', e => {
+    startX     = e.clientX;
+    startWidth = panel.offsetWidth;
+    resizer.classList.add('dragging');
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor     = 'col-resize';
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup',   onMouseUp);
+    e.preventDefault();
+  });
+
+  function onMouseMove(e) {
+    const swapped  = document.getElementById('app').classList.contains('layout-swapped');
+    // Normal: topology is on the right → drag left (startX > clientX) expands panel
+    // Swapped: topology is on the left → drag right (clientX > startX) expands panel
+    const delta    = swapped ? e.clientX - startX : startX - e.clientX;
+    const minWidth = 220;
+    const maxWidth = Math.floor(window.innerWidth * 0.6);
+    const newWidth = Math.min(Math.max(startWidth + delta, minWidth), maxWidth);
+    panel.style.width = newWidth + 'px';
+    syncTopoSize();
+  }
+
+  function onMouseUp() {
+    resizer.classList.remove('dragging');
+    document.body.style.userSelect = '';
+    document.body.style.cursor     = '';
+    document.removeEventListener('mousemove', onMouseMove);
+    document.removeEventListener('mouseup',   onMouseUp);
+  }
+}
+
+// ── Topology Size Sync ────────────────────────────────────────────────────────
+
+function syncTopoSize() {
+  if (!topoSvg) return;
+  const container = document.getElementById('topology-graph');
+  const w = container.clientWidth  || 342;
+  const h = container.clientHeight || 280;
+  topoSvg.attr('viewBox', `0 0 ${w} ${h}`);
+  if (editor.active) {
+    renderEditorGraph();
+  } else if (simulation) {
+    simulation.force('center', d3.forceCenter(w / 2, h / 2));
+    simulation.alpha(0.3).restart();
+  }
+}
+
+// ── Collapsible Info Sections ─────────────────────────────────────────────────
+
+function toggleInfoSection(id) {
+  const section = document.getElementById(id);
+  if (!section) return;
+  const body      = section.querySelector('.topo-info-body');
+  const collapsed = section.classList.toggle('collapsed');
+  body.style.maxHeight = collapsed ? '0' : body.scrollHeight + 'px';
+  setTimeout(syncTopoSize, 260);
+}
+
+function togglePresets() {
+  const chips = document.getElementById('example-chips');
+  const btn   = document.getElementById('preset-toggle-btn');
+  const open  = !chips.classList.contains('open');
+  if (open) {
+    const rect = btn.getBoundingClientRect();
+    chips.style.left = rect.left + 'px';
+    chips.style.top  = (rect.bottom + 6) + 'px';
+  }
+  chips.classList.toggle('open', open);
+  btn.classList.toggle('open', open);
+}
+
+document.addEventListener('click', e => {
+  const btn   = document.getElementById('preset-toggle-btn');
+  const chips = document.getElementById('example-chips');
+  if (!btn || !chips) return;
+  if (!btn.contains(e.target) && !chips.contains(e.target)) {
+    chips.classList.remove('open');
+    btn.classList.remove('open');
+  }
+});
+
+function toggleTopoPanel() {
+  const panel = document.getElementById('topology-panel');
+  const collapsed = panel.classList.toggle('topo-collapsed');
+  // After transition, sync resizer behaviour
+  setTimeout(syncTopoSize, 310);
+  // Shrink panel width when collapsed so main gets the space
+  if (collapsed) {
+    panel._savedWidth = panel.style.width;
+    panel.style.width = '';
+  } else {
+    if (panel._savedWidth) panel.style.width = panel._savedWidth;
+    setTimeout(syncTopoSize, 310);
+  }
 }
 
 // ── Sidebar Toggle ────────────────────────────────────────────────────────────
@@ -1925,6 +2127,26 @@ function initTopoPresets() {
 
   btn.addEventListener('click', e => {
     e.stopPropagation();
+    const isOpen = menu.classList.contains('open');
+    if (!isOpen) {
+      // Temporarily show to measure height
+      menu.style.visibility = 'hidden';
+      menu.style.display = 'block';
+      const menuH = menu.offsetHeight;
+      menu.style.display = '';
+      menu.style.visibility = '';
+
+      const r = btn.getBoundingClientRect();
+      const spaceBelow = window.innerHeight - r.bottom - 8;
+      if (spaceBelow >= menuH || spaceBelow >= 200) {
+        menu.style.top    = (r.bottom + 5) + 'px';
+        menu.style.bottom = '';
+      } else {
+        menu.style.top    = '';
+        menu.style.bottom = (window.innerHeight - r.top + 5) + 'px';
+      }
+      menu.style.right = (window.innerWidth - r.right) + 'px';
+    }
     menu.classList.toggle('open');
   });
 
@@ -1992,26 +2214,14 @@ async function applyPreset(presetName) {
   btn.disabled = false;
 }
 
-// ── Fullscreen ─────────────────────────────────────────────────────────────────
-
-let topoFullscreen = false;
-
-function toggleTopoFullscreen() {
-  topoFullscreen = !topoFullscreen;
-  document.getElementById('topology-panel').classList.toggle('fullscreen', topoFullscreen);
-  const btn = document.getElementById('topo-fullscreen-btn');
-  if (btn) btn.textContent = topoFullscreen ? '⊡' : '⛶';
-  // Re-render after CSS transition so SVG picks up new dimensions
-  setTimeout(() => {
-    if (editor.active) {
-      renderEditorGraph();
-    } else {
-      // Force live topology re-render with updated viewBox
-      topoSnapshot = null;
-      fetchTopology();
-    }
-  }, 80);
+function toggleLayoutSwap() {
+  const app     = document.getElementById('app');
+  const swapped = app.classList.toggle('layout-swapped');
+  localStorage.setItem('layout-swapped', swapped);
+  const btn = document.getElementById('layout-swap-btn');
+  if (btn) btn.title = swapped ? '원래 배치로 전환' : '좌우 배치 전환';
 }
+
 
 // ── Editor: undo stack ─────────────────────────────────────────────────────────
 
@@ -2082,17 +2292,6 @@ function isEditorBg(ev) {
 document.addEventListener('keydown', ev => {
   const inInput = ev.target.tagName === 'INPUT' || ev.target.tagName === 'TEXTAREA';
 
-  // F — fullscreen toggle (always available unless typing)
-  if (ev.key === 'f' && !ev.ctrlKey && !ev.metaKey && !inInput) {
-    toggleTopoFullscreen();
-    return;
-  }
-  // Escape exits fullscreen first
-  if (ev.key === 'Escape' && topoFullscreen) {
-    toggleTopoFullscreen();
-    return;
-  }
-
   if (!editor.active || inInput) return;
 
   switch (ev.key) {
@@ -2130,3 +2329,4 @@ document.addEventListener('keydown', ev => {
 });
 
 document.addEventListener('DOMContentLoaded', init);
+window.addEventListener('resize', syncTopoSize);
