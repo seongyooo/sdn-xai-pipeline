@@ -16,6 +16,14 @@ body {
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
+@keyframes twin-pulse {
+  0%   { stroke-width: 2.5; opacity: 0.85; r: auto; }
+  50%  { stroke-width: 4;   opacity: 0.45; }
+  100% { stroke-width: 2.5; opacity: 0.85; }
+}
+.twin-ring {
+  animation: twin-pulse 1.4s ease-in-out infinite;
+}
 @keyframes slideIn {
   from { opacity: 0; transform: translateY(8px); }
   to   { opacity: 1; transform: translateY(0); }

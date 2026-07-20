@@ -164,6 +164,14 @@ function handleSSEEvent(ev) {
     const s = state.stages[ev.stage - 1];
     s.progress_log.push(ev.msg);
     appendLogLine(ev.stage, ev.msg);
+    // Digital Twin 단계별 시각화 페이즈 전환
+    if (ev.stage === 4 && state.twinActive && twinVizInfo) {
+      const m = ev.msg;
+      if (m.includes('⑤') && m.includes('[baseline]'))        setTwinPhase('baseline');
+      else if (m.includes('⑥') && m.includes('FlowRule'))     setTwinPhase('deployed');
+      else if (m.includes('⑦') && m.includes('[intent]'))     setTwinPhase('intent');
+      else if (m.includes('⑧') && m.includes('[regression]')) setTwinPhase('regression');
+    }
   } else if (ev.type === 'stage') {
     const s = state.stages[ev.stage - 1];
     s.status = ev.status;
@@ -179,6 +187,7 @@ function handleSSEEvent(ev) {
         state.twinActive = true;
       } else {
         state.twinActive = false;
+        stopTwinViz();
         // twin 종료 후 즉시 실제 토폴로지로 복원
         topoSnapshot = null;
         fetchTopology();
@@ -186,8 +195,7 @@ function handleSSEEvent(ev) {
     }
     renderStage(ev.stage - 1);
   } else if (ev.type === 'twin_info') {
-    // twin_info 이벤트는 현재 프론트엔드에서 별도 처리 없음
-    // (상세 정보는 stage 4 progress 로그에 이미 출력됨)
+    onTwinInfo(ev);
   } else if (ev.type === 'decision') {
     state.decision = ev.decision;
     state.decisionReport = ev.report;
@@ -444,6 +452,11 @@ function showTopoError(msg) {
 let topoSvg = null;
 let simulation = null;
 const nodePositions = new Map(); // persist positions across refreshes
+let currentTopoNodes = []; // snapshot for twin viz (id, type, label, ip)
+let currentTopoLinks = []; // snapshot for twin viz (source, target as string IDs)
+let twinVizInfo    = null; // { srcNode, dstNode, blockNode, action }
+let twinVizPhase   = 'idle';
+let twinAnimTimers = [];
 
 // ── Topology Editor State ─────────────────────────────────────────────────────
 
@@ -1080,7 +1093,8 @@ function initTopology() {
     .append('svg')
     .attr('width',   '100%')
     .attr('height',  '100%')
-    .attr('viewBox', `0 0 ${w} ${h}`);
+    .attr('viewBox', `0 0 ${w} ${h}`)
+    .attr('overflow', 'visible'); // allow twin labels near edges to show without clipping
 
   topoSvg.append('g').attr('class', 'links');
   topoSvg.append('g').attr('class', 'nodes');
@@ -1093,6 +1107,9 @@ function updateTopology(data) {
   if (placeholder) placeholder.style.display = 'none';
 
   const { nodes, links } = data;
+  // Snapshot for twin visualization (before D3 mutates objects)
+  currentTopoNodes = (data.nodes || []).map(n => ({ id: n.id, type: n.type, label: n.label || '', ip: n.ip || null }));
+  currentTopoLinks = (data.links || []).map(l => ({ source: String(l.source), target: String(l.target) }));
   if (!nodes || nodes.length === 0) {
     showTopoError('No devices found');
     return;
@@ -1189,6 +1206,9 @@ function updateTopology(data) {
       // clamp to svg bounds
       const x = Math.max(20, Math.min(w - 20, d.x));
       const y = Math.max(20, Math.min(h - 20, d.y));
+      // Update continuously (not just on 'end') so twin packet paths
+      // stay accurate while the user drags nodes
+      nodePositions.set(d.id, { x, y });
       return `translate(${x},${y})`;
     });
   });
@@ -1280,6 +1300,216 @@ function startRefreshLoop() {
     setTimeout(tick, 1000);
   }
   tick();
+}
+
+// ── Digital Twin Visualization ────────────────────────────────────────────────
+
+function stopTwinViz() {
+  twinAnimTimers.forEach(t => clearTimeout(t));
+  twinAnimTimers = [];
+  if (topoSvg) {
+    topoSvg.selectAll('.twin-viz').remove();
+    topoSvg.selectAll('.twin-node-indicator').remove();
+  }
+  twinVizInfo  = null;
+  twinVizPhase = 'idle';
+}
+
+function onTwinInfo(ev) {
+  // host: IP 로 찾기
+  const srcNode   = currentTopoNodes.find(n => n.type === 'host'   && n.ip === ev.src_ip) || null;
+  const dstNode   = currentTopoNodes.find(n => n.type === 'host'   && n.ip === ev.dst_ip) || null;
+  // switch: device_id "of:0000000000000001" → switchNum=1 → label "S1"
+  let blockNode = null;
+  if (ev.device_id) {
+    const swNum  = parseInt(ev.device_id.replace('of:', ''), 16);
+    const swLabel = `S${swNum}`;
+    blockNode = currentTopoNodes.find(n => n.type === 'switch' && n.label === swLabel) || null;
+  }
+  twinVizInfo  = { srcNode, dstNode, blockNode, action: ev.action };
+  twinVizPhase = 'idle';
+  renderTwinHighlights();
+}
+
+function findTopoPath(fromId, toId) {
+  const adj = {};
+  currentTopoLinks.forEach(({ source, target }) => {
+    (adj[source] = adj[source] || []).push(target);
+    (adj[target] = adj[target] || []).push(source);
+  });
+  if (!adj[fromId]) return null;
+  const visited = new Set([fromId]);
+  const queue   = [[fromId]];
+  while (queue.length) {
+    const path = queue.shift();
+    const node = path[path.length - 1];
+    if (node === toId) return path;
+    for (const nb of (adj[node] || [])) {
+      if (!visited.has(nb)) { visited.add(nb); queue.push([...path, nb]); }
+    }
+  }
+  return null;
+}
+
+function getTwinLayer() {
+  if (!topoSvg) return null;
+  let layer = topoSvg.select('.twin-viz');
+  if (layer.empty()) layer = topoSvg.append('g').attr('class', 'twin-viz');
+  return layer;
+}
+
+function renderTwinHighlights() {
+  if (!topoSvg) return;
+  // Remove previous node-attached indicators
+  topoSvg.selectAll('.twin-node-indicator').remove();
+  if (!twinVizInfo) return;
+
+  const { srcNode, dstNode, blockNode, action } = twinVizInfo;
+  const specs = [];
+  if (srcNode)  specs.push({ node: srcNode,  color: '#10b981', tag: 'SRC',   ip: srcNode.ip });
+  if (dstNode)  specs.push({ node: dstNode,  color: '#60a5fa', tag: 'DST',   ip: dstNode.ip });
+  if (blockNode && action === 'block')
+    specs.push({ node: blockNode, color: '#ef4444', tag: 'BLOCK', ip: null });
+
+  specs.forEach(({ node, color, tag, ip }) => {
+    const r = node.type === 'switch' ? 22 : 17;
+
+    // Attach directly to the .live-node <g> so it inherits translate(x,y)
+    // and follows the node when dragged
+    topoSvg.selectAll('g.live-node')
+      .filter(d => d.id === node.id)
+      .each(function() {
+        const g = d3.select(this);
+
+        // Pulsing ring (cx/cy=0 → node center in local coords)
+        g.append('circle')
+          .attr('class', 'twin-node-indicator twin-ring')
+          .attr('r', r).attr('cx', 0).attr('cy', 0)
+          .attr('fill', 'none').attr('stroke', color).attr('stroke-width', 2.5)
+          .attr('pointer-events', 'none');
+
+        // Tag label above node
+        g.append('text')
+          .attr('class', 'twin-node-indicator')
+          .attr('x', 0).attr('y', -r - 6)
+          .attr('text-anchor', 'middle')
+          .attr('font-size', 9).attr('font-weight', '700')
+          .attr('font-family', 'JetBrains Mono, monospace')
+          .attr('fill', color).attr('pointer-events', 'none')
+          .text(tag);
+
+        // IP address label (one line above the tag)
+        if (ip) {
+          g.append('text')
+            .attr('class', 'twin-node-indicator')
+            .attr('x', 0).attr('y', -r - 17)
+            .attr('text-anchor', 'middle')
+            .attr('font-size', 8)
+            .attr('font-family', 'JetBrains Mono, monospace')
+            .attr('fill', color).attr('opacity', 0.75).attr('pointer-events', 'none')
+            .text(ip);
+        }
+
+        // BLOCK: red ✕ overlay on the switch
+        if (tag === 'BLOCK') {
+          g.append('text')
+            .attr('class', 'twin-node-indicator')
+            .attr('x', 0).attr('y', 5)
+            .attr('text-anchor', 'middle').attr('dominant-baseline', 'middle')
+            .attr('font-size', 13).attr('font-weight', '700')
+            .attr('fill', '#ef4444').attr('pointer-events', 'none')
+            .text('✕');
+        }
+      });
+  });
+}
+
+function spawnPacket(layer, pathIds, color, durationMs, stopIdx) {
+  const positions = pathIds.map(id => nodePositions.get(id)).filter(Boolean);
+  if (positions.length < 2) return;
+  const endIdx = (stopIdx !== undefined) ? Math.min(stopIdx, positions.length - 1) : positions.length - 1;
+  const segMs  = durationMs / (positions.length - 1);
+
+  const dot = layer.append('circle')
+    .attr('r', 4.5).attr('fill', color).attr('opacity', 0.92)
+    .attr('cx', positions[0].x).attr('cy', positions[0].y)
+    .attr('pointer-events', 'none');
+
+  let t = dot.transition().duration(0);
+  for (let i = 1; i <= endIdx; i++) {
+    const p = positions[i];
+    t = t.transition().duration(segMs).ease(d3.easeLinear)
+         .attr('cx', p.x).attr('cy', p.y);
+  }
+
+  if (stopIdx !== undefined && stopIdx < positions.length - 1) {
+    // Blocked: burst and vanish
+    t.transition().duration(250).attr('r', 9).attr('opacity', 0).remove();
+  } else {
+    t.transition().duration(300).attr('opacity', 0).remove();
+  }
+}
+
+function startPacketLoop(path, color, stopIdx) {
+  if (!path || path.length < 2) return;
+  const totalMs = Math.min(1800, path.length * 450);
+  const interval = 650;
+
+  function fire(offset) {
+    if (!state.twinActive) return;
+    const layer = getTwinLayer();
+    if (!layer) return;
+    spawnPacket(layer, path, color, totalMs, stopIdx);
+    const t = setTimeout(() => fire(interval), interval);
+    twinAnimTimers.push(t);
+  }
+
+  fire(0);
+  // second stream with offset
+  const t2 = setTimeout(() => fire(0), interval / 2);
+  twinAnimTimers.push(t2);
+}
+
+function setTwinPhase(phase) {
+  if (twinVizPhase === phase) return;
+  twinVizPhase = phase;
+
+  // Clear old animation timers only (keep highlights)
+  twinAnimTimers.forEach(t => clearTimeout(t));
+  twinAnimTimers = [];
+  renderTwinHighlights(); // redraw highlights for new phase
+
+  if (!twinVizInfo || !topoSvg) return;
+  const { srcNode, dstNode, blockNode, action } = twinVizInfo;
+
+  if (phase === 'baseline') {
+    // Green packets: src → dst (no rule yet, full path)
+    if (srcNode && dstNode) {
+      const path = findTopoPath(srcNode.id, dstNode.id);
+      if (path) startPacketLoop(path, '#10b981', undefined);
+    }
+  } else if (phase === 'deployed') {
+    // FlowRule 배포 중 — 블록 스위치만 강조, 패킷 없음
+  } else if (phase === 'intent') {
+    if (action === 'block' && srcNode && blockNode) {
+      // Red packets: src → blockSwitch, stopped
+      const path = findTopoPath(srcNode.id, blockNode.id);
+      if (path) startPacketLoop(path, '#f87171', path.length - 1);
+    } else if (action === 'forward' && srcNode && dstNode) {
+      // Green packets: src → dst through switch
+      const path = findTopoPath(srcNode.id, dstNode.id);
+      if (path) startPacketLoop(path, '#10b981', undefined);
+    }
+  } else if (phase === 'regression') {
+    // Dimmed blue packets on a different pair if available
+    const otherHost = currentTopoNodes.find(
+      n => n.type === 'host' && n.id !== (srcNode?.id) && n.id !== (dstNode?.id)
+    );
+    if (otherHost && dstNode) {
+      const path = findTopoPath(otherHost.id, dstNode.id);
+      if (path) startPacketLoop(path, '#818cf8', undefined);
+    }
+  }
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────

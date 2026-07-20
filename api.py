@@ -266,7 +266,10 @@ def _run_pipeline(req: RunRequest, q: std_queue.Queue) -> None:
                 # twin_info SSE 이벤트 → 프론트엔드 오버레이 업데이트
                 emit({"type": "twin_info",
                       "test": _tdesc,
-                      "action": _act})
+                      "action": _act,
+                      "src_ip": _src or "",
+                      "dst_ip": _dst or "",
+                      "device_id": _flows[0].get("deviceId", "") if _flows else ""})
 
             twin_result = verifier.verify(
                 flowrule,
