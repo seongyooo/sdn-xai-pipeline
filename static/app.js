@@ -1237,6 +1237,12 @@ function init() {
   // Load history + start topology refresh
   loadHistory();
   startRefreshLoop();
+
+  // Auto-update example chips from saved custom topology on page load
+  fetch('/api/topology/custom')
+    .then(r => r.ok ? r.json() : null)
+    .then(data => { if (data && (data.switches || []).length > 0) updateExampleChips(data); })
+    .catch(() => {});
 }
 
 // ── Fullscreen ─────────────────────────────────────────────────────────────────
