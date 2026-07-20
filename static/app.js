@@ -15,7 +15,7 @@ const STAGE_DEFS = [
 
 const state = {
   intent: '',
-  model: 'gemini-3.1-flash',
+  model: 'gemini-3.1-flash-lite',
   enableRag: false,
   skipTwin: false,
   skipDeploy: false,
