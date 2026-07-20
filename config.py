@@ -2,7 +2,9 @@
 config.py — End-to-End XAI SDN 파이프라인 전역 설정
 
 모든 모듈은 이 파일에서 설정을 임포트한다.
-.env 파일은 xai/ 루트(ROOT_DIR)에 위치한다.
+.env 파일 탐색 순서:
+  1. BASE_DIR/.env  (레포 루트, GitHub clone 후 기본 위치)
+  2. BASE_DIR/../.env  (상위 디렉토리, 모노레포 구조)
 """
 from __future__ import annotations
 
@@ -12,15 +14,13 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # ── 경로 설정 ─────────────────────────────────────────────────
-# endTOend/ 디렉토리
 BASE_DIR: Path = Path(__file__).resolve().parent
-
-# xai/ 루트
 ROOT_DIR: Path = BASE_DIR.parent
 
-# .env 로드
-_env_path = ROOT_DIR / ".env"
-load_dotenv(_env_path)
+# .env 탐색: 레포 루트 우선, 없으면 상위 디렉토리
+_env_local = BASE_DIR / ".env"
+_env_parent = ROOT_DIR / ".env"
+load_dotenv(_env_local if _env_local.exists() else _env_parent)
 
 # ── LLM 설정 ─────────────────────────────────────────────────
 LLM_BASE_URL: str = os.environ.get("LLM_BASE_URL", "https://ollama.jangmyun.dev/v1")

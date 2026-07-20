@@ -88,34 +88,92 @@ sdn-xai-pipeline/
 
 ---
 
-## 설치
+## WSL 실행 가이드
+
+### 1. 클론 및 의존성 설치
 
 ```bash
+git clone https://github.com/seongyooo/sdn-xai-pipeline.git
+cd sdn-xai-pipeline
 pip install -r requirements.txt
 ```
 
-환경변수 설정 (프로젝트 상위 디렉토리에 `.env` 파일):
+Digital Twin(Mininet) 사용 시 추가 설치:
 
-```env
+```bash
+sudo apt update && sudo apt install -y mininet
+```
+
+### 2. 환경변수 설정
+
+프로젝트 루트에 `.env` 파일 생성:
+
+```bash
+cat > .env << 'EOF'
 LLM_BASE_URL=https://ollama.example.com/v1
 LLM_MODEL=qwen3:8b
 EMBED_MODEL=nomic-embed-text
 LLM_API_KEY=ollama
 
-# Gemini 사용 시
 GOOGLE_API_KEY=your_key_here
 
-# ONOS 설정
 ONOS_URL=http://127.0.0.1:8181/onos/v1
 ONOS_USER=onos
 ONOS_PASSWORD=rocks
+EOF
+```
+
+### 3. sudo 권한 설정 (Digital Twin 필수)
+
+Mininet은 root 권한이 필요합니다. 매번 비밀번호 입력 없이 실행하려면:
+
+```bash
+# sudoers 설정 (현재 사용자에게 NOPASSWD 부여)
+echo "$USER ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/$USER
+sudo chmod 440 /etc/sudoers.d/$USER
+```
+
+설정 확인:
+
+```bash
+sudo echo "sudo 권한 OK"
+```
+
+### 4. 앱 실행
+
+#### Streamlit UI (Web)
+
+```bash
+# Digital Twin 스킵 (일반 실행)
+streamlit run app.py
+
+# Digital Twin 사용 시 (root 필요)
+sudo -E $(which python3) -m streamlit run app.py
+```
+
+브라우저에서 `http://localhost:8501` 접속
+
+#### FastAPI + Web UI
+
+```bash
+# Digital Twin 스킵 (일반 실행)
+uvicorn api:app --reload --port 8000
+
+# Digital Twin 사용 시 (root 필요)
+sudo -E $(which uvicorn) api:app --port 8000
+```
+
+브라우저에서 `http://localhost:8000` 접속
+
+#### CLI
+
+```bash
+python pipeline.py --intent "block all traffic from 10.0.0.1 to 10.0.0.4 on switch 1"
 ```
 
 ---
 
-## 사용법
-
-### CLI
+## 사용법 (CLI 옵션)
 
 ```bash
 # 기본 실행
@@ -140,21 +198,6 @@ python pipeline.py --intent "..." --no-rag
 | `0` | APPROVE (모든 검증 통과, 배포 완료) |
 | `1` | APPROVE_WITHOUT_TWIN (Twin 스킵, 배포 완료) |
 | `2` | REJECT (검증 실패 또는 인텐트 거부) |
-
-### Streamlit UI
-
-```bash
-streamlit run app.py
-
-# Digital Twin 사용 시 (Linux/Mac)
-sudo -E $(which python3) -m streamlit run app.py
-```
-
-### REST API
-
-```bash
-python api.py
-```
 
 ---
 

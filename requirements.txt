@@ -1,0 +1,14 @@
+# Core
+fastapi
+uvicorn[standard]
+streamlit
+pydantic
+python-dotenv
+
+# RAG
+faiss-cpu
+numpy
+pandas
+
+# Gemini (optional)
+google-genai
