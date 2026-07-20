@@ -5,10 +5,10 @@ intents_v2.jsonl 또는 임의의 JSONL 파일을 읽어
 구조적 무결성, 중복 ID, 카테고리별 통계를 출력한다.
 
 사용법:
-    cd endTOend/
-    python data/validate_dataset.py                         # 기본: intents_v2.jsonl
-    python data/validate_dataset.py data/intents_v2.jsonl  # 경로 지정
-    python data/validate_dataset.py --strict                # 오류 시 exit 1
+    cd sdn-xai-pipeline/
+    python scripts/validate_dataset.py                      # 기본: data/intents_v2.jsonl
+    python scripts/validate_dataset.py data/intents_v2.jsonl  # 경로 지정
+    python scripts/validate_dataset.py --strict             # 오류 시 exit 1
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
-_DEFAULT = Path(__file__).resolve().parent / "intents_v2.jsonl"
+_DEFAULT = Path(__file__).resolve().parent.parent / "data" / "intents_v2.jsonl"
 
 
 def _check_rule(rule: dict, rule_idx: int, case_id: str) -> list[str]:

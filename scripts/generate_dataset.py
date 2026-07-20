@@ -17,9 +17,9 @@ endTOend/data/intents_v2.jsonl (100케이스)을 생성한다.
   h1=10.0.0.1, h2=10.0.0.2, h3=10.0.0.3, h4=10.0.0.4
 
 사용법:
-    cd endTOend/
-    python data/generate_dataset.py
-    # → endTOend/data/intents_v2.jsonl 생성 (100케이스)
+    cd sdn-xai-pipeline/
+    python scripts/generate_dataset.py
+    # → data/intents_v2.jsonl 생성 (100케이스)
 """
 from __future__ import annotations
 
@@ -28,11 +28,11 @@ import sys
 from pathlib import Path
 
 # ── 경로 설정 ─────────────────────────────────────────────────────
-_THIS_DIR = Path(__file__).resolve().parent
-_ENDTOEND_DIR = _THIS_DIR.parent
+_SCRIPTS_DIR = Path(__file__).resolve().parent
+_ROOT_DIR = _SCRIPTS_DIR.parent
 _SOURCE_JSONL = Path(r"C:\Users\seonl\Desktop\c\2026\summer\sdn_intent-framework") \
     / "experiments" / "e1" / "data" / "intents.jsonl"
-_OUTPUT_JSONL = _THIS_DIR / "intents_v2.jsonl"
+_OUTPUT_JSONL = _ROOT_DIR / "data" / "intents_v2.jsonl"
 
 
 # ── 헬퍼 ──────────────────────────────────────────────────────────
