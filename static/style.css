@@ -237,50 +237,6 @@ body {
   margin-top: 10px;
   position: relative;
 }
-#preset-toggle-btn {
-  background: none;
-  border: 1px solid #1f2937;
-  border-radius: 8px;
-  color: #6b7280;
-  font-size: 12px;
-  font-family: 'JetBrains Mono', monospace;
-  padding: 5px 12px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  transition: border-color 0.15s, color 0.15s;
-}
-#preset-toggle-btn:hover { border-color: #3b82f6; color: #f9fafb; }
-#preset-toggle-arrow { display: inline-block; transition: transform 0.2s; font-size: 10px; }
-#preset-toggle-btn.open #preset-toggle-arrow { transform: rotate(90deg); }
-
-#example-chips {
-  position: fixed;
-  z-index: 200;
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  background: #111827;
-  border: 1px solid #374151;
-  border-radius: 10px;
-  padding: 10px;
-  width: max-content;
-  max-width: min(500px, 90vw);
-  max-height: 260px;
-  overflow-y: auto;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
-  visibility: hidden;
-  opacity: 0;
-  transform: translateY(-4px);
-  transition: opacity 0.15s ease, transform 0.15s ease, visibility 0s linear 0.15s;
-}
-#example-chips.open {
-  visibility: visible;
-  opacity: 1;
-  transform: translateY(0);
-  transition: opacity 0.15s ease, transform 0.15s ease;
-}
 .example-chip {
   font-size: 12px;
   font-family: 'JetBrains Mono', monospace;
@@ -348,7 +304,11 @@ body {
   border: 1px solid #1f2937;
   border-radius: 12px;
   overflow: hidden;
-  animation: slideIn 0.3s ease backwards;
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+.stage-card-enter {
+  opacity: 0;
+  transform: translateY(10px);
 }
 .stage-card.border-running { border-color: #3b82f6; }
 .stage-card.border-error   { border-color: #ef4444; }

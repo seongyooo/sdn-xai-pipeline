@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional, TYPE_CHECKING
 
-from models.intent_ir import IntentIR
+from models.intent_ir import IntentIR, CompoundIntentIR
 from stage3_static.static_validator import StaticResult
 from stage4_twin.twin_verifier import TwinResult
 
@@ -73,10 +73,11 @@ class XAIExplainer:
     def explain(
         self,
         intent: str,
-        ir: IntentIR,
+        ir: Optional[IntentIR],
         flowrule: dict,
         static_result: StaticResult,
         twin_result: TwinResult,
+        compound: Optional[CompoundIntentIR] = None,
     ) -> XAIReport:
         """
         각 스테이지 결과를 종합하여 XAIReport를 생성한다.
@@ -92,7 +93,11 @@ class XAIExplainer:
             XAIReport
         """
         # ── 1. 각 스테이지 요약 생성 (템플릿 기반) ────────────
-        ir_summary = self._summarize_ir(ir)
+        # 복합 인텐트의 경우 compound에서 대표 ir 선택
+        effective_ir = ir if ir is not None else (
+            compound.rules[0] if compound and compound.rules else None
+        )
+        ir_summary = self._summarize_ir(effective_ir, compound)
         flowrule_summary = self._summarize_flowrule(flowrule)
         static_summary = static_result.summary()
         twin_summary = self._summarize_twin(twin_result)
@@ -110,11 +115,11 @@ class XAIExplainer:
 
         # ── 3. 판정 근거 ──────────────────────────────────────
         decision_reason = self._build_decision_reason(
-            decision, static_result, twin_result, ir
+            decision, static_result, twin_result, effective_ir
         )
 
         # ── 4. evidence 목록 구성 ─────────────────────────────
-        evidence = self._build_evidence(ir, flowrule, static_result, twin_result)
+        evidence = self._build_evidence(effective_ir, compound, flowrule, static_result, twin_result)
 
         return XAIReport(
             intent=intent,
@@ -129,34 +134,38 @@ class XAIExplainer:
 
     # ── 내부 요약 메서드 ──────────────────────────────────────
 
-    def _summarize_ir(self, ir: IntentIR) -> str:
-        """IntentIR을 자연어로 요약"""
+    def _summarize_ir(
+        self,
+        ir: Optional[IntentIR],
+        compound: Optional[CompoundIntentIR] = None,
+    ) -> str:
+        """IntentIR (또는 CompoundIntentIR)을 자연어로 요약"""
         action_map = {
-            "block": "차단",
-            "forward": "전달",
-            "qos": "QoS 처리",
-            "sfc": "서비스 체인",
-            "reroute": "경로 변경",
+            "block": "차단", "forward": "전달",
+            "qos": "QoS 처리", "sfc": "서비스 체인", "reroute": "경로 변경",
         }
+
+        # 복합 인텐트
+        if compound and compound.rules:
+            parts = []
+            for i, r in enumerate(compound.rules):
+                label = action_map.get(r.action, r.action)
+                parts.append(f"rule[{i}]: {r.action}({label}) on {r.device_hint}")
+            return f"복합 인텐트 {len(compound.rules)}개 룰 — " + " | ".join(parts)
+
+        if ir is None:
+            return "(IR 없음)"
+
         action_str = action_map.get(ir.action, ir.action)
-        device_str = ir.device_hint
-
         parts = []
-        if ir.src_ip:
-            parts.append(f"src={ir.src_ip}")
-        if ir.dst_ip:
-            parts.append(f"dst={ir.dst_ip}")
-        if ir.ip_proto:
-            parts.append(f"proto={ir.ip_proto}")
-        if ir.dst_port:
-            parts.append(f"dport={ir.dst_port}")
-        if ir.out_port:
-            parts.append(f"outPort={ir.out_port}")
-        if ir.queue_id:
-            parts.append(f"queue={ir.queue_id}")
-
+        if ir.src_ip:   parts.append(f"src={ir.src_ip}")
+        if ir.dst_ip:   parts.append(f"dst={ir.dst_ip}")
+        if ir.ip_proto: parts.append(f"proto={ir.ip_proto}")
+        if ir.dst_port: parts.append(f"dport={ir.dst_port}")
+        if ir.out_port: parts.append(f"outPort={ir.out_port}")
+        if ir.queue_id: parts.append(f"queue={ir.queue_id}")
         match_str = " | ".join(parts) if parts else "(기본 매칭)"
-        return f"action={ir.action}({action_str}) | device={device_str} | {match_str}"
+        return f"action={ir.action}({action_str}) | device={ir.device_hint} | {match_str}"
 
     def _summarize_flowrule(self, flowrule: dict) -> str:
         """FlowRule을 한 줄로 요약"""
@@ -203,7 +212,7 @@ class XAIExplainer:
         decision: str,
         static_result: StaticResult,
         twin_result: TwinResult,
-        ir: IntentIR,
+        ir: Optional[IntentIR],
     ) -> str:
         """
         판정 근거 생성.
@@ -255,7 +264,7 @@ class XAIExplainer:
         decision: str,
         static_result: StaticResult,
         twin_result: TwinResult,
-        ir: IntentIR,
+        ir: Optional[IntentIR],
         template_reason: str,
     ) -> Optional[str]:
         """LLM으로 판정 근거 자연어 생성 (실패 시 None 반환)"""
@@ -264,8 +273,9 @@ class XAIExplainer:
             "주어진 정보를 바탕으로 FlowRule 배포 판정 근거를 한국어로 2-3문장으로 설명하세요. "
             "JSON 형식: {\"reason\": \"설명 텍스트\"}"
         )
+        ir_desc = f"action={ir.action}, device={ir.device_hint}" if ir else "(복합 인텐트)"
         user = (
-            f"인텐트 action={ir.action}, device={ir.device_hint}\n"
+            f"인텐트 {ir_desc}\n"
             f"정적 검증: {'통과' if static_result.passed else '실패'}\n"
             f"  - 스키마 오류: {static_result.schema_errors}\n"
             f"  - 충돌: {[c.get('conflict_type') for c in static_result.conflicts]}\n"
@@ -285,7 +295,8 @@ class XAIExplainer:
 
     def _build_evidence(
         self,
-        ir: IntentIR,
+        ir: Optional[IntentIR],
+        compound: Optional[CompoundIntentIR],
         flowrule: dict,
         static_result: StaticResult,
         twin_result: TwinResult,
@@ -294,10 +305,21 @@ class XAIExplainer:
         evidence = []
 
         # Stage 1
+        if compound:
+            finding = f"복합 인텐트 {len(compound.rules)}개 룰: " + ", ".join(
+                f"rule[{i}]={r.action}" for i, r in enumerate(compound.rules)
+            )
+            data = compound.to_dict()
+        elif ir:
+            finding = f"action={ir.action}, device={ir.device_hint}"
+            data = ir.to_dict()
+        else:
+            finding = "(IR 없음)"
+            data = {}
         evidence.append({
             "stage": "Stage1_IntentParsing",
-            "finding": f"action={ir.action}, device={ir.device_hint}",
-            "data": ir.to_dict(),
+            "finding": finding,
+            "data": data,
         })
 
         # Stage 2

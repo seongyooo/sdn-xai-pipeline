@@ -67,9 +67,17 @@ def _check_intra_conflicts(flows: list[dict]) -> list[dict]:
                 continue
 
             # ETH_TYPE + IPV4_SRC + IPV4_DST + IP_PROTO + (TCP/UDP_DST) 모두 일치하면 충돌
+            # 포트 필드(TCP_DST, UDP_DST, TCP_SRC, UDP_SRC)가 다르면 다른 트래픽이므로 충돌 아님
             key_types = {"ETH_TYPE", "IPV4_SRC", "IPV4_DST", "IP_PROTO"}
+            port_types = {"TCP_DST", "UDP_DST", "TCP_SRC", "UDP_SRC"}
             if key_types.issubset(shared_types):
                 match = all(c1[t] == c2[t] for t in key_types if t in c1 and t in c2)
+                # 포트가 명시된 경우: 양쪽 모두 포트가 있고 값이 다르면 다른 트래픽 → 충돌 아님
+                if match:
+                    for pt in port_types:
+                        if pt in c1 and pt in c2 and c1[pt] != c2[pt]:
+                            match = False
+                            break
                 if match:
                     i1 = f1.get("treatment", {}).get("instructions", [])
                     i2 = f2.get("treatment", {}).get("instructions", [])

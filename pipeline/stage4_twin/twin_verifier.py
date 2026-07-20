@@ -197,42 +197,49 @@ class TwinVerifier:
                 reason="SFC 인텐트는 Digital Twin에서 waypoint 장치 없이 검증 불가",
             )
 
-        # FlowRule에서 action 추출
-        # intent_action 필드 우선 사용 (compiler가 명시적으로 기록)
-        # 없으면 flow rule 구조로 역추론 (하위 호환)
         flows = flowrule.get("flows", [])
-        flow = flows[0] if flows else {}
-        if "intent_action" in flowrule:
-            action = flowrule["intent_action"]
+
+        # 복합 인텐트: sub_rules 목록에서 검증 대상 추출
+        is_compound = flowrule.get("intent_action") == "compound"
+        if is_compound:
+            sub_rules = flowrule.get("sub_rules", [])
         else:
-            instructions = flow.get("treatment", {}).get("instructions", [])
-            has_output = any(i.get("type") == "OUTPUT" for i in instructions)
-            action = "forward" if has_output else "block"
+            sub_rules = [flowrule]  # 단일 룰을 리스트로 감싸 통일 처리
 
-        # 타겟 pair 결정 및 프로토콜/포트 추출
-        criteria = flow.get("selector", {}).get("criteria", [])
-        src_ip = None
-        dst_ip = None
-        flow_proto = None   # "tcp" | "udp" | "icmp" | None
-        flow_dst_port = None  # int | None
-        for c in criteria:
-            if c["type"] == "IPV4_SRC":
-                src_ip = c.get("ip", "").split("/")[0]
-            elif c["type"] == "IPV4_DST":
-                dst_ip = c.get("ip", "").split("/")[0]
-            elif c["type"] == "IP_PROTO":
-                proto_num = c.get("protocol")
-                flow_proto = {6: "tcp", 17: "udp", 1: "icmp"}.get(proto_num)
-            elif c["type"] == "TCP_DST":
-                flow_dst_port = c.get("tcpPort")
-            elif c["type"] == "UDP_DST":
-                flow_dst_port = c.get("udpPort")
+        # 각 sub-rule에서 (action, src_ip, dst_ip, flow_proto, flow_dst_port, flow) 추출
+        intent_specs = []
+        for sr in sub_rules:
+            sr_flows = sr.get("flows", [])
+            sr_flow = sr_flows[0] if sr_flows else {}
+            sr_action = sr.get("intent_action", "")
+            if not sr_action:
+                instructions = sr_flow.get("treatment", {}).get("instructions", [])
+                has_output = any(i.get("type") == "OUTPUT" for i in instructions)
+                sr_action = "forward" if has_output else "block"
+            criteria = sr_flow.get("selector", {}).get("criteria", [])
+            sr_src = sr_dst = sr_proto = sr_port = None
+            for c in criteria:
+                if c["type"] == "IPV4_SRC":
+                    sr_src = c.get("ip", "").split("/")[0]
+                elif c["type"] == "IPV4_DST":
+                    sr_dst = c.get("ip", "").split("/")[0]
+                elif c["type"] == "IP_PROTO":
+                    sr_proto = {6: "tcp", 17: "udp", 1: "icmp"}.get(c.get("protocol"))
+                elif c["type"] == "TCP_DST":
+                    sr_port = c.get("tcpPort")
+                elif c["type"] == "UDP_DST":
+                    sr_port = c.get("udpPort")
+            if sr_src is not None or sr_dst is not None:
+                intent_specs.append((sr_action, sr_src, sr_dst, sr_proto, sr_port, sr_flow))
 
-        if src_ip is None and dst_ip is None:
+        if not intent_specs:
             return TwinResult(
                 status="skipped",
                 reason="FlowRule에 IPV4_SRC/IPV4_DST criteria가 없어 트래픽 검증 대상을 특정할 수 없음",
             )
+
+        # 대표 flow (baseline/regression 기준): 첫 번째 sub-rule 사용
+        action, src_ip, dst_ip, flow_proto, flow_dst_port, flow = intent_specs[0]
 
         # IP→호스트 매핑 (커스텀 토폴로지 우선, 없으면 Diamond 기본값)
         ip_to_host: dict[str, str] = {}
@@ -332,73 +339,89 @@ class TwinVerifier:
                     timeout=15.0,
                 )
 
-            # ── 6. intent 동작 확인 ────────────────────────
-            # ── 6a. block 인텐트: 스티어링 룰로 경로 강제 ───────────────
-            # ONOS fwd 앱이 우선순위가 높거나 다른 경로를 선택하면 블록 스위치를
-            # 우회할 수 있으므로, block 인텐트일 때는 해당 스위치를 반드시 경유하도록
-            # 임시 OVS 스티어링 룰을 설치한 뒤 ping 검증을 수행한다.
-            steered_switches: list[str] = []
-            force_path: list[str] = []
-            if action == "block" and custom_data and src_ip and dst_ip:
-                block_sw_name = _device_id_to_sw_name(flow.get("deviceId", ""), custom_data)
-                src_sw_name   = _find_host_switch(src_host, custom_data)
-                if block_sw_name and src_sw_name:
-                    sw_path = _bfs_sw_path(src_sw_name, block_sw_name, custom_data)
-                    if len(sw_path) >= 2:
-                        force_path = [src_host] + sw_path
-                        self._log(
-                            f"   ↳ 검증 경로 강제: {' → '.join(force_path)}"
-                        )
-                        for i in range(len(sw_path) - 1):
-                            hop, nxt = sw_path[i], sw_path[i + 1]
-                            port = _find_mininet_port(net, hop, nxt)
-                            if port:
-                                sw_node = net.get(hop)
-                                sw_node.cmd(
-                                    f'ovs-ofctl add-flow {hop} '
-                                    f'"cookie={_STEERING_COOKIE},priority=55000,'
-                                    f'ip,nw_src={src_ip},nw_dst={dst_ip},'
-                                    f'actions=output:{port}" -O OpenFlow13'
-                                )
-                                steered_switches.append(hop)
-                        if steered_switches:
-                            time.sleep(1)
+            # ── 6. intent 동작 확인 (모든 sub-rule 순회) ──────────────
+            for spec_idx, (spec_action, spec_src_ip, spec_dst_ip,
+                           spec_proto, spec_port, spec_flow) in enumerate(intent_specs):
+                # 단일 인텐트는 기존 키 이름 유지, 복합이면 번호 접미사
+                check_key = "intent_check" if len(intent_specs) == 1 else f"intent_check_{spec_idx}"
+                msg_key   = "intent_msg"   if len(intent_specs) == 1 else f"intent_msg_{spec_idx}"
 
-            # ── 6b. intent 동작 확인 ────────────────────────────────────
-            # block만 차단 확인, 나머지(forward/qos/reroute)는 도달 확인
-            expect_reach = (action != "block")
-            if flow_proto in ("tcp", "udp") and flow_dst_port is not None:
-                proto_label = f"{flow_proto.upper()}/{flow_dst_port}"
-                self._log(
-                    f"⑦ [intent] {'전달 확인' if expect_reach else '차단 확인'}: "
-                    f"{src_host} → {baseline_dst_ip}:{proto_label}"
+                # 이 spec의 src/dst 호스트 해석
+                spec_dst_host = ip_to_host.get(spec_dst_ip or "", primary_pair[1])
+                if spec_src_ip is not None:
+                    spec_src_host = ip_to_host.get(spec_src_ip, primary_pair[0])
+                else:
+                    spec_src_host = next(
+                        (hid for hid in ip_to_host.values() if hid != spec_dst_host),
+                        primary_pair[0],
+                    )
+                spec_dst_ip_resolved = spec_dst_ip or next(
+                    (ip for ip, hid in ip_to_host.items() if hid == primary_pair[1]),
+                    "10.0.0.4",
                 )
-                intent_ok, intent_msg = self._port_check(
-                    net, src_host, baseline_dst_ip,
-                    proto=flow_proto, port=flow_dst_port,
-                    expect_reach=expect_reach,
-                )
-            else:
-                self._log(
-                    f"⑦ [intent] {'전달 확인' if expect_reach else '차단 확인'}: "
-                    f"{src_host} → {baseline_dst_ip} (ICMP)"
-                )
-                intent_ok, intent_msg = self._ping_check(
-                    net, src_host, baseline_dst_ip, expect_reach=expect_reach
-                )
-            checks["intent_check"] = intent_ok
-            evidence["intent_msg"] = intent_msg
-            self._log(f"   {'✓' if intent_ok else '✗'} {intent_msg}")
 
-            # ── 6c. 스티어링 룰 제거 ──────────────────────────────────
-            for hop in steered_switches:
-                sw_node = net.get(hop)
-                sw_node.cmd(
-                    f'ovs-ofctl del-flows {hop} '
-                    f'"cookie={_STEERING_COOKIE}/-1" -O OpenFlow13'
-                )
-            if steered_switches:
-                self._log("   ↳ 스티어링 룰 제거 완료")
+                # ── 6a. block 인텐트: 스티어링 룰로 경로 강제 ─────────
+                # ONOS fwd 앱이 블록 스위치를 우회하지 못하도록 임시 OVS 스티어링 룰 설치
+                steered_switches: list[str] = []
+                if spec_action == "block" and custom_data and spec_src_ip and spec_dst_ip:
+                    block_sw_name = _device_id_to_sw_name(spec_flow.get("deviceId", ""), custom_data)
+                    spec_src_sw   = _find_host_switch(spec_src_host, custom_data)
+                    if block_sw_name and spec_src_sw:
+                        sw_path = _bfs_sw_path(spec_src_sw, block_sw_name, custom_data)
+                        if len(sw_path) >= 2:
+                            force_path = [spec_src_host] + sw_path
+                            self._log(f"   ↳ 검증 경로 강제: {' → '.join(force_path)}")
+                            for i in range(len(sw_path) - 1):
+                                hop, nxt = sw_path[i], sw_path[i + 1]
+                                out_port = _find_mininet_port(net, hop, nxt)
+                                if out_port:
+                                    sw_node = net.get(hop)
+                                    sw_node.cmd(
+                                        f'ovs-ofctl add-flow {hop} '
+                                        f'"cookie={_STEERING_COOKIE},priority=55000,'
+                                        f'ip,nw_src={spec_src_ip},nw_dst={spec_dst_ip},'
+                                        f'actions=output:{out_port}" -O OpenFlow13'
+                                    )
+                                    steered_switches.append(hop)
+                            if steered_switches:
+                                time.sleep(1)
+
+                # ── 6b. intent 동작 확인 ───────────────────────────────
+                # block만 차단 확인, 나머지(forward/qos/reroute)는 도달 확인
+                expect_reach = (spec_action != "block")
+                step_label   = f"⑦ [intent_{spec_idx}]" if len(intent_specs) > 1 else "⑦ [intent]"
+                if spec_proto in ("tcp", "udp") and spec_port is not None:
+                    proto_label = f"{spec_proto.upper()}/{spec_port}"
+                    self._log(
+                        f"{step_label} {'전달 확인' if expect_reach else '차단 확인'}: "
+                        f"{spec_src_host} → {spec_dst_ip_resolved}:{proto_label}"
+                    )
+                    intent_ok, intent_msg = self._port_check(
+                        net, spec_src_host, spec_dst_ip_resolved,
+                        proto=spec_proto, port=spec_port,
+                        expect_reach=expect_reach,
+                    )
+                else:
+                    self._log(
+                        f"{step_label} {'전달 확인' if expect_reach else '차단 확인'}: "
+                        f"{spec_src_host} → {spec_dst_ip_resolved} (ICMP)"
+                    )
+                    intent_ok, intent_msg = self._ping_check(
+                        net, spec_src_host, spec_dst_ip_resolved, expect_reach=expect_reach
+                    )
+                checks[check_key] = intent_ok
+                evidence[msg_key]  = intent_msg
+                self._log(f"   {'✓' if intent_ok else '✗'} {intent_msg}")
+
+                # ── 6c. 스티어링 룰 제거 ──────────────────────────────
+                for hop in steered_switches:
+                    sw_node = net.get(hop)
+                    sw_node.cmd(
+                        f'ovs-ofctl del-flows {hop} '
+                        f'"cookie={_STEERING_COOKIE}/-1" -O OpenFlow13'
+                    )
+                if steered_switches:
+                    self._log("   ↳ 스티어링 룰 제거 완료")
 
             # ── 7. 회귀 테스트 ───────────────────────────
             host_to_ip = {hid: ip for ip, hid in ip_to_host.items()}

@@ -375,8 +375,6 @@ async function runPipeline() {
   state.stages.forEach(s => {
     s.status = 'idle'; s.elapsed = null; s.result = null; s.expanded = false; s.progress_log = [];
   });
-  document.getElementById('stages-section').style.display = 'flex';
-  renderAllStages();
   renderDecision();
   setRunBtn(true);
 
@@ -430,11 +428,11 @@ function handleSSEEvent(ev) {
     s.progress_log.push(ev.msg);
     appendLogLine(ev.stage, ev.msg);
     // Digital Twin 단계별 시각화 페이즈 전환
-    if (ev.stage === 4 && state.twinActive && twinVizInfo) {
+    if (ev.stage === 4 && state.twinActive && twinVizInfoList.length) {
       const m = ev.msg;
       if (m.includes('⑤') && m.includes('[baseline]'))        setTwinPhase('baseline');
       else if (m.includes('⑥') && m.includes('FlowRule'))     setTwinPhase('deployed');
-      else if (m.includes('⑦') && m.includes('[intent]'))     setTwinPhase('intent');
+      else if (m.includes('⑦') && m.includes('[intent'))       setTwinPhase('intent');
       else if (m.includes('⑧') && m.includes('[regression]')) setTwinPhase('regression');
     }
   } else if (ev.type === 'stage') {
@@ -443,6 +441,8 @@ function handleSSEEvent(ev) {
     if (ev.elapsed != null) s.elapsed = ev.elapsed;
     if (ev.result != null) s.result = ev.result;
     if (ev.error != null) s.result = { error: ev.error };
+    // 카드가 없으면 먼저 생성 (단계적 등장)
+    ensureStageCard(ev.stage);
     // 에러 단계는 자동으로 펼쳐서 즉시 확인 가능하게
     if (ev.status === 'error') s.expanded = true;
     // Digital Twin 단계: 실행 시 자동 확장 + 토폴로지 freeze 제어
@@ -450,6 +450,7 @@ function handleSSEEvent(ev) {
       if (ev.status === 'running') {
         s.expanded = true;
         state.twinActive = true;
+        twinVizInfoList = []; // 새 twin 실행 시 초기화
       } else {
         state.twinActive = false;
         stopTwinViz();
@@ -532,30 +533,38 @@ function buildStageCards() {
   const section = document.getElementById('stages-section');
   section.style.display = 'none';
   section.innerHTML = '';
-  STAGE_DEFS.forEach((def, i) => {
-    const card = document.createElement('div');
-    card.className = 'stage-card';
-    card.id = `stage-${def.num}`;
-    card.style.animationDelay = `${i * 0.05}s`;
-    card.innerHTML = `
-      <div class="stage-header" data-idx="${i}">
-        <div class="stage-badge" id="badge-${def.num}">${def.num}</div>
-        <div class="stage-name">${def.name}</div>
-        <div class="stage-time" id="time-${def.num}">—</div>
-        <div class="stage-icon" id="icon-${def.num}">${iconDot()}</div>
-      </div>
-      <div class="stage-progress" id="progress-${def.num}">
-        <div class="stage-progress-bar" id="progress-bar-${def.num}"></div>
-      </div>
-      <div class="live-log" id="live-${def.num}"></div>
-      <div class="stage-detail" id="detail-${def.num}"></div>
-    `;
-    card.querySelector('.stage-header').addEventListener('click', () => {
-      state.stages[i].expanded = !state.stages[i].expanded;
-      renderStage(i);
-    });
-    section.appendChild(card);
+}
+
+function ensureStageCard(stageNum) {
+  const section = document.getElementById('stages-section');
+  if (document.getElementById(`stage-${stageNum}`)) return;
+
+  const i   = stageNum - 1;
+  const def = STAGE_DEFS[i];
+  const card = document.createElement('div');
+  card.className = 'stage-card stage-card-enter';
+  card.id = `stage-${def.num}`;
+  card.innerHTML = `
+    <div class="stage-header" data-idx="${i}">
+      <div class="stage-badge" id="badge-${def.num}">${def.num}</div>
+      <div class="stage-name">${def.name}</div>
+      <div class="stage-time" id="time-${def.num}">—</div>
+      <div class="stage-icon" id="icon-${def.num}">${iconDot()}</div>
+    </div>
+    <div class="stage-progress" id="progress-${def.num}">
+      <div class="stage-progress-bar" id="progress-bar-${def.num}"></div>
+    </div>
+    <div class="live-log" id="live-${def.num}"></div>
+    <div class="stage-detail" id="detail-${def.num}"></div>
+  `;
+  card.querySelector('.stage-header').addEventListener('click', () => {
+    state.stages[i].expanded = !state.stages[i].expanded;
+    renderStage(i);
   });
+  section.style.display = 'flex';
+  section.appendChild(card);
+  // Trigger animation
+  requestAnimationFrame(() => card.classList.remove('stage-card-enter'));
 }
 
 function renderAllStages() {
@@ -743,7 +752,7 @@ let simulation = null;
 const nodePositions = new Map(); // persist positions across refreshes
 let currentTopoNodes = []; // snapshot for twin viz (id, type, label, ip)
 let currentTopoLinks = []; // snapshot for twin viz (source, target as string IDs)
-let twinVizInfo    = null; // { srcNode, dstNode, blockNode, action }
+let twinVizInfoList = []; // [{ srcNode, dstNode, blockNode, action }, ...]
 let twinVizPhase   = 'idle';
 let twinAnimTimers = [];
 
@@ -1414,13 +1423,28 @@ function updateExampleChips(topo) {
     });
   }
 
-  const container = document.getElementById('example-chips');
-  container.innerHTML = chips.map(c =>
-    `<div class="example-chip" data-intent="${escHtml(c.i)}" data-kr="${escHtml(c.k)}">${escHtml(c.t)}</div>`
-  ).join('');
-  container.querySelectorAll('.example-chip').forEach(chip =>
-    chip.addEventListener('click', () => fillIntent(chip.dataset.intent, chip.dataset.kr))
-  );
+  // Update the dynamic section in the intent preset menu
+  const menu = document.getElementById('intent-preset-menu');
+  if (!menu) return;
+  // Remove existing dynamic items (all items after first static group)
+  menu.querySelectorAll('.dynamic-preset-item, .dynamic-preset-label').forEach(el => el.remove());
+
+  if (chips.length === 0) return;
+  const label = document.createElement('div');
+  label.className = 'preset-group-label dynamic-preset-label';
+  label.textContent = 'Current Topology';
+  menu.appendChild(label);
+  chips.forEach(c => {
+    const item = document.createElement('div');
+    item.className = 'preset-item dynamic-preset-item';
+    item.textContent = c.t;
+    item.addEventListener('click', e => {
+      e.stopPropagation();
+      menu.classList.remove('open');
+      fillIntent(c.i, c.k);
+    });
+    menu.appendChild(item);
+  });
 }
 
 function initTopology() {
@@ -1704,8 +1728,8 @@ function stopTwinViz() {
     topoSvg.selectAll('.twin-viz').remove();
     topoSvg.selectAll('.twin-node-indicator').remove();
   }
-  twinVizInfo  = null;
-  twinVizPhase = 'idle';
+  twinVizInfoList = [];
+  twinVizPhase    = 'idle';
 }
 
 function onTwinInfo(ev) {
@@ -1719,7 +1743,7 @@ function onTwinInfo(ev) {
     const swLabel = `S${swNum}`;
     blockNode = currentTopoNodes.find(n => n.type === 'switch' && n.label === swLabel) || null;
   }
-  twinVizInfo  = { srcNode, dstNode, blockNode, action: ev.action };
+  twinVizInfoList.push({ srcNode, dstNode, blockNode, action: ev.action });
   twinVizPhase = 'idle';
   renderTwinHighlights();
 }
@@ -1755,14 +1779,17 @@ function renderTwinHighlights() {
   if (!topoSvg) return;
   // Remove previous node-attached indicators
   topoSvg.selectAll('.twin-node-indicator').remove();
-  if (!twinVizInfo) return;
+  if (!twinVizInfoList.length) return;
 
-  const { srcNode, dstNode, blockNode, action } = twinVizInfo;
+  // Collect unique node specs across all sub-rules
+  // (compound: multiple src/dst/block entries may exist)
+  const seenNodeIds = new Set();
   const specs = [];
-  if (srcNode)  specs.push({ node: srcNode,  color: '#10b981', tag: 'SRC',   ip: srcNode.ip });
-  if (dstNode)  specs.push({ node: dstNode,  color: '#60a5fa', tag: 'DST',   ip: dstNode.ip });
-  if (blockNode && action === 'block')
-    specs.push({ node: blockNode, color: '#ef4444', tag: 'BLOCK', ip: null });
+  for (const { srcNode, dstNode, blockNode, action } of twinVizInfoList) {
+    if (srcNode   && !seenNodeIds.has(srcNode.id))   { seenNodeIds.add(srcNode.id);   specs.push({ node: srcNode,   color: '#10b981', tag: 'SRC',   ip: srcNode.ip }); }
+    if (dstNode   && !seenNodeIds.has(dstNode.id))   { seenNodeIds.add(dstNode.id);   specs.push({ node: dstNode,   color: '#60a5fa', tag: 'DST',   ip: dstNode.ip }); }
+    if (blockNode && action === 'block' && !seenNodeIds.has(blockNode.id)) { seenNodeIds.add(blockNode.id); specs.push({ node: blockNode, color: '#ef4444', tag: 'BLOCK', ip: null }); }
+  }
 
   specs.forEach(({ node, color, tag, ip }) => {
     const r = node.type === 'switch' ? 22 : 17;
@@ -1873,8 +1900,10 @@ function setTwinPhase(phase) {
   twinAnimTimers = [];
   renderTwinHighlights(); // redraw highlights for new phase
 
-  if (!twinVizInfo || !topoSvg) return;
-  const { srcNode, dstNode, blockNode, action } = twinVizInfo;
+  if (!twinVizInfoList.length || !topoSvg) return;
+  // Use all sub-rule specs for animation; first entry drives baseline/regression logic
+  const primary = twinVizInfoList[0];
+  const { srcNode, dstNode } = primary;
 
   if (phase === 'baseline') {
     // Green packets: src → dst (no rule yet, full path)
@@ -1885,26 +1914,24 @@ function setTwinPhase(phase) {
   } else if (phase === 'deployed') {
     // FlowRule 배포 중 — 블록 스위치만 강조, 패킷 없음
   } else if (phase === 'intent') {
-    if (action === 'block' && srcNode && blockNode) {
-      // Red packets: src → blockSwitch, stopped
-      const path = findTopoPath(srcNode.id, blockNode.id);
-      if (path) startPacketLoop(path, '#f87171', path.length - 1);
-    } else if (action === 'forward' && srcNode && dstNode) {
-      // Green packets: src → dst through switch
-      const path = findTopoPath(srcNode.id, dstNode.id);
-      if (path) startPacketLoop(path, '#10b981', undefined);
+    // Animate each sub-rule's intent
+    for (const { srcNode: sn, dstNode: dn, blockNode: bn, action } of twinVizInfoList) {
+      if (action === 'block' && sn && bn) {
+        const path = findTopoPath(sn.id, bn.id);
+        if (path) startPacketLoop(path, '#f87171', path.length - 1);
+      } else if (action !== 'block' && sn && dn) {
+        const path = findTopoPath(sn.id, dn.id);
+        if (path) startPacketLoop(path, '#10b981', undefined);
+      }
     }
   } else if (phase === 'regression') {
-    // Animate between two hosts that are neither src nor dst
-    // (mirrors twin_verifier's regression pair: ids[1] ↔ ids[2])
-    const others = currentTopoNodes.filter(
-      n => n.type === 'host' && n.id !== (srcNode?.id) && n.id !== (dstNode?.id)
-    );
+    // Animate between two hosts that are neither src nor dst of any sub-rule
+    const usedIds = new Set(twinVizInfoList.flatMap(v => [v.srcNode?.id, v.dstNode?.id].filter(Boolean)));
+    const others  = currentTopoNodes.filter(n => n.type === 'host' && !usedIds.has(n.id));
     if (others.length >= 2) {
       const path = findTopoPath(others[0].id, others[1].id);
       if (path) startPacketLoop(path, '#818cf8', undefined);
     } else if (others.length === 1 && srcNode) {
-      // Only one other host — animate to srcNode as fallback
       const path = findTopoPath(others[0].id, srcNode.id);
       if (path) startPacketLoop(path, '#818cf8', undefined);
     }
@@ -1927,10 +1954,8 @@ function init() {
   // Run button
   document.getElementById('run-btn').addEventListener('click', runPipeline);
 
-  // Example chips
-  document.querySelectorAll('.example-chip').forEach(chip => {
-    chip.addEventListener('click', () => fillIntent(chip.dataset.intent, chip.dataset.kr));
-  });
+  // Intent presets
+  initIntentPresets();
 
   // Settings
   document.getElementById('model-select').addEventListener('change', e => { state.model = e.target.value; });
@@ -1985,10 +2010,20 @@ function init() {
   // Panel resizer
   initPanelResizer();
 
-  // Initialize collapsible section max-heights
+  // Default topology panel width: as wide as possible
+  const topoPanel = document.getElementById('topology-panel');
+  if (topoPanel && !localStorage.getItem('topo-panel-width')) {
+    topoPanel.style.width = Math.floor(window.innerWidth * 0.5) + 'px';
+  } else if (topoPanel && localStorage.getItem('topo-panel-width')) {
+    topoPanel.style.width = localStorage.getItem('topo-panel-width');
+  }
+
+  // Topo info sections: start collapsed
   document.querySelectorAll('.topo-info-section').forEach(section => {
     const body = section.querySelector('.topo-info-body');
-    if (body) body.style.maxHeight = body.scrollHeight + 'px';
+    if (!body) return;
+    section.classList.add('collapsed');
+    body.style.maxHeight = '0';
   });
 }
 
@@ -2028,6 +2063,7 @@ function initPanelResizer() {
     resizer.classList.remove('dragging');
     document.body.style.userSelect = '';
     document.body.style.cursor     = '';
+    localStorage.setItem('topo-panel-width', panel.style.width);
     document.removeEventListener('mousemove', onMouseMove);
     document.removeEventListener('mouseup',   onMouseUp);
   }
@@ -2060,28 +2096,44 @@ function toggleInfoSection(id) {
   setTimeout(syncTopoSize, 260);
 }
 
-function togglePresets() {
-  const chips = document.getElementById('example-chips');
-  const btn   = document.getElementById('preset-toggle-btn');
-  const open  = !chips.classList.contains('open');
-  if (open) {
-    const rect = btn.getBoundingClientRect();
-    chips.style.left = rect.left + 'px';
-    chips.style.top  = (rect.bottom + 6) + 'px';
-  }
-  chips.classList.toggle('open', open);
-  btn.classList.toggle('open', open);
-}
+function initIntentPresets() {
+  const btn  = document.getElementById('intent-preset-btn');
+  const menu = document.getElementById('intent-preset-menu');
 
-document.addEventListener('click', e => {
-  const btn   = document.getElementById('preset-toggle-btn');
-  const chips = document.getElementById('example-chips');
-  if (!btn || !chips) return;
-  if (!btn.contains(e.target) && !chips.contains(e.target)) {
-    chips.classList.remove('open');
-    btn.classList.remove('open');
-  }
-});
+  btn.addEventListener('click', e => {
+    e.stopPropagation();
+    const isOpen = menu.classList.contains('open');
+    if (!isOpen) {
+      menu.style.visibility = 'hidden';
+      menu.style.display = 'block';
+      const menuH = menu.offsetHeight;
+      menu.style.display = '';
+      menu.style.visibility = '';
+
+      const r = btn.getBoundingClientRect();
+      const spaceBelow = window.innerHeight - r.bottom - 8;
+      if (spaceBelow >= menuH || spaceBelow >= 200) {
+        menu.style.top    = (r.bottom + 5) + 'px';
+        menu.style.bottom = '';
+      } else {
+        menu.style.top    = '';
+        menu.style.bottom = (window.innerHeight - r.top + 5) + 'px';
+      }
+      menu.style.left = r.left + 'px';
+    }
+    menu.classList.toggle('open');
+  });
+
+  document.addEventListener('click', () => menu.classList.remove('open'));
+
+  menu.querySelectorAll('.preset-item').forEach(item => {
+    item.addEventListener('click', e => {
+      e.stopPropagation();
+      menu.classList.remove('open');
+      fillIntent(item.dataset.intent, item.dataset.kr);
+    });
+  });
+}
 
 function toggleTopoPanel() {
   const panel = document.getElementById('topology-panel');

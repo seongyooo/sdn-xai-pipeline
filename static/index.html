@@ -96,23 +96,24 @@
       ></textarea>
 
       <div id="preset-toggle-row">
-        <button id="preset-toggle-btn" onclick="togglePresets()">
-          <span id="preset-toggle-arrow">▸</span> Presets
-        </button>
-      </div>
-
-      <div id="example-chips">
-        <div class="example-chip" data-intent="Block all traffic from 10.0.0.1 to 10.0.0.4 on switch 4" data-kr="[차단] 스위치 4에서 10.0.0.1 → 10.0.0.4 모든 트래픽을 드롭합니다.">Block 10.0.0.1→10.0.0.4</div>
-        <div class="example-chip" data-intent="Block TCP traffic on port 22 destined for 10.0.0.2 on switch 1" data-kr="[차단] 스위치 1에서 10.0.0.2로 향하는 SSH(TCP:22) 트래픽을 차단합니다.">Block SSH to 10.0.0.2</div>
-        <div class="example-chip" data-intent="Forward ICMP traffic destined for 10.0.0.1 through port 3 on switch 1" data-kr="[전달] 스위치 1에서 10.0.0.1로 향하는 ICMP(ping) 트래픽을 포트 3으로 내보냅니다.">Forward ICMP→10.0.0.1</div>
-        <div class="example-chip" data-intent="Apply QoS for video streaming from 10.0.0.1 to 10.0.0.4 on switch 1" data-kr="[QoS] 스위치 1에서 10.0.0.1 → 10.0.0.4 영상 스트리밍 트래픽에 우선순위 큐를 적용합니다.">QoS 10.0.0.1→10.0.0.4</div>
-        <div class="example-chip" data-intent="Forward TCP traffic on port 80 destined for 10.0.0.3 via port 2 on switch 1" data-kr="[전달] 스위치 1에서 10.0.0.3:80(HTTP)으로 향하는 TCP 트래픽을 포트 2로 내보냅니다.">Forward HTTP→10.0.0.3</div>
-        <div class="example-chip" data-intent="Block all traffic from 10.0.0.3 to 10.0.0.4 on switch 4" data-kr="[차단] 스위치 4에서 10.0.0.3 → 10.0.0.4 모든 트래픽을 드롭합니다.">Block 10.0.0.3→10.0.0.4</div>
-        <div class="example-chip" data-intent="Steer HTTP traffic from 10.0.0.1 to 10.0.0.4 through IDS at port 9, then forward out port 2 on switch 2" data-kr="[SFC] 스위치 2에서 10.0.0.1→10.0.0.4 HTTP 트래픽을 포트 9의 IDS로 검사한 뒤, 포트 2로 목적지에 전달합니다.">SFC: IDS 10.0.0.1→10.0.0.4</div>
-        <div class="example-chip" data-intent="Reroute traffic from 10.0.0.2 to 10.0.0.3 via switch 3 avoiding switch 2 on switch 1" data-kr="[재경로] 스위치 1에서 10.0.0.2→10.0.0.3 트래픽을 스위치 2를 우회하여 스위치 3 경로로 재지정합니다.">Reroute via s3 (avoid s2)</div>
-        <div class="example-chip" data-intent="Allow HTTP from 10.0.0.1 to 10.0.0.2 via port 2 on switch 1, but block SSH from 10.0.0.1 to 10.0.0.2 on switch 1" data-kr="[복합] 스위치 1에서 10.0.0.1→10.0.0.2 HTTP(TCP:80)는 포트 2로 허용하고, SSH(TCP:22)는 차단합니다.">Compound: Allow HTTP, Block SSH</div>
-        <div class="example-chip" data-intent="Block ICMP from 10.0.0.1 to 10.0.0.3 on switch 1 and apply QoS for video streaming from 10.0.0.2 to 10.0.0.4 on switch 1" data-kr="[복합] 스위치 1에서 10.0.0.1→10.0.0.3 ICMP를 차단하고, 10.0.0.2→10.0.0.4 영상 트래픽에 QoS를 적용합니다.">Compound: Block ICMP + QoS</div>
-        <div class="example-chip" data-intent="Forward HTTP from 10.0.0.1 to 10.0.0.3 via port 2 on switch 1, and block all traffic from 10.0.0.2 to 10.0.0.4 on switch 2" data-kr="[복합] 스위치 1에서 10.0.0.1→10.0.0.3 HTTP를 포트 2로 전달하고, 스위치 2에서 10.0.0.2→10.0.0.4를 차단합니다.">Compound: Multi-switch rules</div>
+        <button id="intent-preset-btn" class="topo-mode-btn">⊞ Presets</button>
+        <div id="intent-preset-menu" class="preset-menu">
+          <div class="preset-group-label">Block</div>
+          <div class="preset-item" data-intent="Block all traffic from 10.0.0.1 to 10.0.0.4 on switch 4" data-kr="[차단] 스위치 4에서 10.0.0.1 → 10.0.0.4 모든 트래픽을 드롭합니다.">Block 10.0.0.1 → 10.0.0.4</div>
+          <div class="preset-item" data-intent="Block TCP traffic on port 22 destined for 10.0.0.2 on switch 1" data-kr="[차단] 스위치 1에서 10.0.0.2로 향하는 SSH(TCP:22) 트래픽을 차단합니다.">Block SSH → 10.0.0.2</div>
+          <div class="preset-item" data-intent="Block all traffic from 10.0.0.3 to 10.0.0.4 on switch 4" data-kr="[차단] 스위치 4에서 10.0.0.3 → 10.0.0.4 모든 트래픽을 드롭합니다.">Block 10.0.0.3 → 10.0.0.4</div>
+          <div class="preset-group-label">Forward</div>
+          <div class="preset-item" data-intent="Forward ICMP traffic destined for 10.0.0.1 through port 3 on switch 1" data-kr="[전달] 스위치 1에서 10.0.0.1로 향하는 ICMP(ping) 트래픽을 포트 3으로 내보냅니다.">Forward ICMP → 10.0.0.1</div>
+          <div class="preset-item" data-intent="Forward TCP traffic on port 80 destined for 10.0.0.3 via port 2 on switch 1" data-kr="[전달] 스위치 1에서 10.0.0.3:80(HTTP)으로 향하는 TCP 트래픽을 포트 2로 내보냅니다.">Forward HTTP → 10.0.0.3</div>
+          <div class="preset-group-label">QoS / SFC / Reroute</div>
+          <div class="preset-item" data-intent="Apply QoS for video streaming from 10.0.0.1 to 10.0.0.4 on switch 1" data-kr="[QoS] 스위치 1에서 10.0.0.1 → 10.0.0.4 영상 스트리밍 트래픽에 우선순위 큐를 적용합니다.">QoS video 10.0.0.1 → 10.0.0.4</div>
+          <div class="preset-item" data-intent="Steer HTTP traffic from 10.0.0.1 to 10.0.0.4 through IDS at port 9, then forward out port 2 on switch 2" data-kr="[SFC] 스위치 2에서 10.0.0.1→10.0.0.4 HTTP 트래픽을 포트 9의 IDS로 검사한 뒤, 포트 2로 목적지에 전달합니다.">SFC: IDS 10.0.0.1 → 10.0.0.4</div>
+          <div class="preset-item" data-intent="Reroute traffic from 10.0.0.2 to 10.0.0.3 via switch 3 avoiding switch 2 on switch 1" data-kr="[재경로] 스위치 1에서 10.0.0.2→10.0.0.3 트래픽을 스위치 2를 우회하여 스위치 3 경로로 재지정합니다.">Reroute via s3 (avoid s2)</div>
+          <div class="preset-group-label">Compound</div>
+          <div class="preset-item" data-intent="Allow HTTP from 10.0.0.1 to 10.0.0.2 via port 2 on switch 1, but block SSH from 10.0.0.1 to 10.0.0.2 on switch 1" data-kr="[복합] 스위치 1에서 10.0.0.1→10.0.0.2 HTTP(TCP:80)는 포트 2로 허용하고, SSH(TCP:22)는 차단합니다.">Allow HTTP + Block SSH</div>
+          <div class="preset-item" data-intent="Block ICMP from 10.0.0.1 to 10.0.0.3 on switch 1 and apply QoS for video streaming from 10.0.0.2 to 10.0.0.4 on switch 1" data-kr="[복합] 스위치 1에서 10.0.0.1→10.0.0.3 ICMP를 차단하고, 10.0.0.2→10.0.0.4 영상 트래픽에 QoS를 적용합니다.">Block ICMP + QoS</div>
+          <div class="preset-item" data-intent="Forward HTTP from 10.0.0.1 to 10.0.0.3 via port 2 on switch 1, and block all traffic from 10.0.0.2 to 10.0.0.4 on switch 2" data-kr="[복합] 스위치 1에서 10.0.0.1→10.0.0.3 HTTP를 포트 2로 전달하고, 스위치 2에서 10.0.0.2→10.0.0.4를 차단합니다.">Forward HTTP + Block (multi-sw)</div>
+        </div>
       </div>
 
       <div id="intent-translation"></div>
