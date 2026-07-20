@@ -384,6 +384,38 @@ def get_topology():
             if custom:
                 return _custom_topo_as_d3(custom)
 
+        # Build label maps from custom topology so ONOS live data keeps correct labels.
+        # e.g. of:0000000000000005 → "S5" (not sequential "S1")
+        sw_label_map: dict[str, str] = {}   # ONOS device ID → switch label
+        host_label_map: dict[str, str] = {}  # host IP → host label
+        _custom = _load_custom_topology()
+        if _custom:
+            for _sw in _custom.get("switches", []):
+                _dpid = _sw.get("dpid", "0" * 16)
+                sw_label_map[f"of:{_dpid}"] = _sw.get("label", _sw["id"])
+            for _h in _custom.get("hosts", []):
+                if _h.get("ip"):
+                    host_label_map[_h["ip"]] = _h.get("label", _h["id"])
+
+        def _sw_label(dev_id: str) -> str:
+            """Custom topology label → else extract number from DPID hex."""
+            if dev_id in sw_label_map:
+                return sw_label_map[dev_id]
+            try:
+                n = int(dev_id.split(":")[-1], 16)
+                return f"S{n}"
+            except Exception:
+                return dev_id[-4:] if len(dev_id) > 4 else dev_id
+
+        def _host_label(h: dict) -> str:
+            ip = (h.get("ipAddresses") or [""])[0]
+            if ip in host_label_map:
+                return host_label_map[ip]
+            try:
+                return f"H{int(ip.split('.')[-1])}"
+            except Exception:
+                return h.get("id", "H?")
+
         hosts_data = c.hosts() or []
         links_data = c.links() or []
         flows_data = c.flows() or []
@@ -408,23 +440,23 @@ def get_topology():
         nodes = [
             {
                 "id": d["id"],
-                "label": f"S{i + 1}",
+                "label": _sw_label(d["id"]),
                 "type": "switch",
                 "state": dev_state(d["id"], d.get("available", False)),
             }
-            for i, d in enumerate(devices)
+            for d in devices
         ]
         dev_label = {n["id"]: n["label"] for n in nodes}
 
         host_nodes = [
             {
                 "id": h["id"],
-                "label": f"H{j + 1}",
+                "label": _host_label(h),
                 "type": "host",
                 "ip": (h.get("ipAddresses") or [""])[0],
                 "switch": (h.get("locations") or [{}])[0].get("elementId", ""),
             }
-            for j, h in enumerate(hosts_data)
+            for h in hosts_data
         ]
 
         seen: set = set()
