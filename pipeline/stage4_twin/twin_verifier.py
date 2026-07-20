@@ -347,7 +347,7 @@ class TwinVerifier:
         """
         import json
         from pathlib import Path
-        path = Path(__file__).resolve().parent.parent / "data" / "custom_topology.json"
+        path = Path(__file__).resolve().parent.parent.parent / "data" / "custom_topology.json"
         if path.exists():
             try:
                 return json.loads(path.read_text(encoding="utf-8"))

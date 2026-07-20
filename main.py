@@ -5,10 +5,10 @@ End-to-End XAI SDN Pipeline
 → Digital Twin 검증 → XAI 설명 → ONOS 배포까지 전 과정을 수행한다.
 
 사용법:
-    python pipeline.py --intent "block all traffic from 10.0.0.1 to 10.0.0.4 on switch 1"
-    python pipeline.py --intent "..." --model gemini-2.0-flash --skip-twin
-    python pipeline.py --intent "..." --rag-k 5 --verbose
-    python pipeline.py --intent "..." --skip-twin --skip-deploy
+    python main.py --intent "block all traffic from 10.0.0.1 to 10.0.0.4 on switch 1"
+    python main.py --intent "..." --model gemini-2.0-flash --skip-twin
+    python main.py --intent "..." --rag-k 5 --verbose
+    python main.py --intent "..." --skip-twin --skip-deploy
 """
 from __future__ import annotations
 
@@ -19,10 +19,11 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-# endTOend/ 를 sys.path에 추가 (상대 임포트 지원)
 _BASE_DIR = Path(__file__).resolve().parent
 if str(_BASE_DIR) not in sys.path:
     sys.path.insert(0, str(_BASE_DIR))
+if str(_BASE_DIR / 'pipeline') not in sys.path:
+    sys.path.insert(0, str(_BASE_DIR / 'pipeline'))
 
 import config
 

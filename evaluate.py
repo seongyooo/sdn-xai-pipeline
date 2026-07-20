@@ -24,10 +24,11 @@ import time
 from pathlib import Path
 from typing import Optional
 
-# endTOend/ 를 sys.path에 추가
 _BASE_DIR = Path(__file__).resolve().parent
 if str(_BASE_DIR) not in sys.path:
     sys.path.insert(0, str(_BASE_DIR))
+if str(_BASE_DIR / 'pipeline') not in sys.path:
+    sys.path.insert(0, str(_BASE_DIR / 'pipeline'))
 
 import config
 
