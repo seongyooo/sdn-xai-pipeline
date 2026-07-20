@@ -152,8 +152,17 @@ class TwinVerifier:
                 "10.0.0.1": "h1", "10.0.0.2": "h2",
                 "10.0.0.3": "h3", "10.0.0.4": "h4",
             }
-        src_host = ip_to_host.get(src_ip or "", primary_pair[0])
         dst_host = ip_to_host.get(dst_ip or "", primary_pair[1])
+
+        if src_ip is not None:
+            src_host = ip_to_host.get(src_ip, primary_pair[0])
+        else:
+            # src_ip 미지정: dst_host가 아닌 다른 호스트를 소스로 선택.
+            # 자기 자신에게 연결하면 루프백을 타서 스위치/블록룰을 우회하기 때문.
+            src_host = next(
+                (hid for hid in ip_to_host.values() if hid != dst_host),
+                primary_pair[0],
+            )
 
         # baseline ping 대상 IP (dst_host의 IP)
         baseline_dst_ip = dst_ip or next(
@@ -209,9 +218,10 @@ class TwinVerifier:
             time.sleep(3)
 
             # ── 5. baseline 연결성 확인 ────────────────────
+            # intent_check와 동일한 src_host 사용 (dst와 다른 호스트)
             print("    [Twin] baseline 연결성 확인 중...")
             baseline_ok, baseline_msg = self._ping_check(
-                net, primary_pair[0], baseline_dst_ip, expect_reach=True
+                net, src_host, baseline_dst_ip, expect_reach=True
             )
             checks["baseline_connectivity"] = baseline_ok
             evidence["baseline_msg"] = baseline_msg
