@@ -228,13 +228,23 @@ class TwinVerifier:
             evidence["intent_msg"] = intent_msg
 
             # ── 7. 회귀 테스트 ───────────────────────────
+            # primary_pair와 regression_pair가 동일하면 (호스트 2개 이하 토폴로지)
+            # 회귀 테스트가 intent 검증과 동일한 쌍을 검사하게 되어 항상 false-fail.
+            # 이 경우 회귀 테스트를 스킵하고 통과 처리한다.
             host_to_ip = {hid: ip for ip, hid in ip_to_host.items()}
-            regression_dst_ip = host_to_ip.get(regression_pair[1], "10.0.0.3")
-            regression_ok, regression_msg = self._ping_check(
-                net, regression_pair[0], regression_dst_ip, expect_reach=True
-            )
-            checks["regression"] = regression_ok
-            evidence["regression_msg"] = regression_msg
+            if regression_pair == primary_pair:
+                checks["regression"] = True
+                evidence["regression_msg"] = (
+                    "회귀 테스트 스킵 — 독립적인 호스트 쌍 없음 "
+                    f"(토폴로지 호스트 수: {len(ip_to_host)}개)"
+                )
+            else:
+                regression_dst_ip = host_to_ip.get(regression_pair[1], "10.0.0.3")
+                regression_ok, regression_msg = self._ping_check(
+                    net, regression_pair[0], regression_dst_ip, expect_reach=True
+                )
+                checks["regression"] = regression_ok
+                evidence["regression_msg"] = regression_msg
 
             # ── 판정 ──────────────────────────────────────
             all_passed = all(checks.values())
