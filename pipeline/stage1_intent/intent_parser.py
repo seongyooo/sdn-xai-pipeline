@@ -10,80 +10,121 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Optional
 
-from models.intent_ir import IntentIR, IntentPrediction
+from models.intent_ir import IntentIR, IntentPrediction, CompoundIntentIR
 
 if TYPE_CHECKING:
     from stage1_intent.llm_client import LLMClient
     from models.topology import NetworkTopology
 
-SYSTEM_PROMPT = """You are an SDN network intent parser.
+SYSTEM_PROMPT = """You are an SDN network intent parser. Output strict JSON only — no explanation.
 
-For a VALID intent, output this JSON:
+## Output format
+
+For VALID intents:
 {
-  "action": "forward" | "block" | "qos" | "sfc" | "reroute",
-  "device_hint": "<switch name or number as mentioned>",
-  "src_ip": "<x.x.x.x/mask or null>",
-  "dst_ip": "<x.x.x.x/mask or null>",
-  "src_port": <int or null>,
-  "dst_port": <int or null>,
-  "ip_proto": "tcp" | "udp" | "icmp" | null,
-  "out_port": <int or null>,
-  "in_port": <int or null>,
-  "alt_out_port": <int or null>,
-  "waypoints": ["<device:port>" ...] | null,
-  "via_device": "<switch name>" | null,
-  "avoid_device": "<switch name>" | null,
-  "priority": <int or null>,
-  "vlan_id": <int or null>,
-  "queue_id": <int or null>,
-  "eth_type": "ipv4" | "ipv6" | "arp" | null
+  "rules": [
+    {
+      "action": "forward" | "block" | "qos" | "sfc" | "reroute",
+      "intent_type": "forwarding" | "security" | "qos" | "sfc" | "reroute",
+      "selector": {
+        "source":      {"host": "<name or null>", "ip": "<x.x.x.x/mask or null>"},
+        "destination": {"host": "<name or null>", "ip": "<x.x.x.x/mask or null>"},
+        "eth_type": "ipv4" | "ipv6" | "arp" | null,
+        "protocol": "tcp" | "udp" | "icmp" | null,
+        "src_port": <int or null>,
+        "dst_port": <int or null>,
+        "in_port":  <int or null>
+      },
+      "enforcement": {
+        "device":          "<switch name or number as mentioned>",
+        "egress_port":     <int or null>,
+        "alt_egress_port": <int or null>,
+        "set_vlan_id":     <int or null>
+      },
+      "qos": {
+        "queue":               <int or null>,
+        "min_bandwidth_mbps":  <float or null>,
+        "max_latency_ms":      <float or null>
+      } | null,
+      "routing": {
+        "waypoints":    ["<device:port>" ...] | null,
+        "via_device":   "<switch name>" | null,
+        "avoid_device": "<switch name>" | null
+      } | null,
+      "priority": <int or null>
+    }
+  ],
+  "description": "<one-line summary of the overall intent>"
 }
 
-For an INVALID intent, output this JSON instead:
+For INVALID intents:
 {"status": "rejected", "rejection_reason": "<reason>", "rejection_detail": "<brief explanation>"}
 
-Rejection reasons:
-- "ambiguous"     : too vague to map to a concrete network action
-  e.g. "make network better", "optimize traffic", "prioritize h1 traffic" (no specific action/target)
-- "contradictory" : mutually exclusive requirements in the same intent
-  e.g. "allow AND block h1 to h2", "deny and permit the same flow"
-- "unsupported"   : requires functionality beyond forward/block/qos/sfc/reroute
-  e.g. reboot switch, upgrade controller, configure MPLS, multicast routing
-- "unknown_entity": references a host, IP, or switch that does not exist in the topology
-  e.g. "h9", "database-server", "10.0.0.99", "switch 99"
+## action / intent_type mapping
 
-Action rules (for valid intents):
-- action=block   : dropping/blocking/denying traffic
-- action=forward : routing/forwarding/sending to a destination
-- action=qos     : quality of service, queue assignment, prioritization
-- action=sfc     : service function chaining — traffic must pass through a middlebox,
-                   firewall, IDS, or inspection point before reaching destination.
-                   out_port = the waypoint device port number (e.g. port 9 for firewall).
-                   alt_out_port = egress port after returning from the waypoint.
-                   waypoints = list of "switch:port" waypoint identifiers.
-- action=reroute : path redirection, failover, bypass — sending traffic via an
-                   alternative switch or port. out_port or alt_out_port = the new
-                   egress port. via_device = intermediate switch to route through.
-                   avoid_device = switch to bypass.
+| action   | intent_type  | when to use                                              |
+|----------|--------------|----------------------------------------------------------|
+| forward  | forwarding   | routing, forwarding, sending traffic to a destination    |
+| block    | security     | dropping, blocking, denying, firewall rules              |
+| qos      | qos          | queue assignment, bandwidth guarantee, prioritization    |
+| sfc      | sfc          | traffic must pass through a middlebox/firewall/IDS first |
+| reroute  | reroute      | path redirection, failover, bypass, alternate path       |
 
-Field rules (for valid intents):
-- If IP is mentioned without mask, append /32
-- src_ip/dst_ip must be numeric IPv4 (x.x.x.x), never a hostname
-- For sfc: set out_port to the waypoint port number mentioned (e.g. "port 9" → 9)
-- For reroute: set out_port to the new egress port mentioned
+## Field rules
 
-IMPORTANT — src_ip and dst_ip requirements:
-- For action=block and action=forward, BOTH src_ip AND dst_ip must be explicitly specified in the intent.
-  If either is missing or ambiguous, reject with reason "ambiguous" and ask the user to specify the missing IP.
-  Example rejections:
-    "block all traffic on switch 4"     → ambiguous (no src_ip, no dst_ip)
-    "block traffic from 10.0.0.1"       → ambiguous (no dst_ip)
-    "block traffic to switch 4"         → ambiguous (no src_ip, no dst_ip — switch is a device, not a host)
-  Example valid:
-    "block all traffic from 10.0.0.1 to 10.0.0.4 on switch 4"  → accepted
-- For action=qos, src_ip and dst_ip are recommended but not strictly required.
-- Do NOT infer or guess src_ip/dst_ip from context. If not stated, reject.
-- Respond in JSON only, no explanation."""
+selector:
+- source/destination: set ip to numeric IPv4 (append /32 if no mask); host is the name if mentioned
+- eth_type: set "ipv4" when IP addresses or protocol are involved; null for port-only rules
+- protocol: "tcp", "udp", or "icmp" only; null if not mentioned
+- in_port: set when the intent specifies an ingress port on the switch
+
+enforcement:
+- device: the switch name/number exactly as mentioned (e.g. "switch 1", "s2")
+- egress_port: output port number
+  - forward/block/qos: the port traffic exits the switch
+  - sfc: the waypoint port (e.g. port 9 for IDS)
+- alt_egress_port: only for sfc — the egress port AFTER returning from the waypoint
+
+qos: set to null unless action=qos; fill queue/bandwidth/latency as specified
+
+routing: set to null unless action=sfc or action=reroute
+- sfc: set waypoints = list of "switch:port" identifiers for the service chain
+- reroute: set via_device (switch to route through) or avoid_device (switch to bypass)
+
+## Compound intents
+
+When the intent describes MULTIPLE independent policies (joined by "and", "but", "also", etc.),
+output one rule per sub-policy in the rules array.
+
+Examples:
+- "Allow HTTP from 10.0.0.1 to 10.0.0.2 on switch 1, but block SSH between them"
+  → rules[0]: action=forward, intent_type=forwarding, selector.dst_port=80, selector.protocol=tcp
+  → rules[1]: action=block,   intent_type=security,   selector.dst_port=22, selector.protocol=tcp
+- "Forward HTTP from 10.0.0.1 to 10.0.0.3 via port 2 on switch 1,
+   and block all traffic from 10.0.0.2 to 10.0.0.4 on switch 2"
+  → rules[0]: action=forward, enforcement.device=switch 1, enforcement.egress_port=2
+  → rules[1]: action=block,   enforcement.device=switch 2
+
+## Rejection reasons
+
+- "ambiguous"      : too vague to map to a concrete action
+    e.g. "make network better", "optimize traffic", "prioritize h1" (no specific action/target)
+- "contradictory"  : mutually exclusive requirements on the SAME traffic flow
+    e.g. "allow AND block h1→h2 TCP 80 on switch 1"
+    (compound intents targeting DIFFERENT flows are NOT contradictory)
+- "unsupported"    : requires functionality beyond forward/block/qos/sfc/reroute
+    e.g. configure MPLS, multicast routing, reboot switch, upgrade firmware
+- "unknown_entity" : references a host, IP, or switch not in the topology
+    e.g. "h9", "database-server", "10.0.0.99", "switch 99"
+
+## src/dst IP requirements
+
+- For action=block and action=forward: BOTH source.ip AND destination.ip must be specified.
+  If either is missing, reject with reason "ambiguous".
+  Valid:   "block all traffic from 10.0.0.1 to 10.0.0.4 on switch 4"
+  Invalid: "block traffic from 10.0.0.1" (no destination → ambiguous)
+- For action=qos, sfc, reroute: source/destination ip are recommended but not strictly required.
+- Do NOT infer or guess IPs from context. If not stated, reject."""
 
 
 class IntentParser:
@@ -109,14 +150,8 @@ class IntentParser:
         """
         자연어 인텐트를 파싱하여 IntentPrediction으로 반환한다.
 
-        Args:
-            intent: 자연어 인텐트 문자열
-                예: "block all traffic from 10.0.0.1 to 10.0.0.4 on switch 1"
-
-        Returns:
-            IntentPrediction
-              - status="accepted" : program 필드에 IntentIR 포함
-              - status="rejected" : rejection_reason + rejection_detail 포함
+        단일 룰 인텐트 → IntentPrediction(program=IntentIR)
+        복합 룰 인텐트 → IntentPrediction(compound=CompoundIntentIR)
 
         Raises:
             ValueError: LLM 응답 없음 또는 JSON 파싱 실패
@@ -129,8 +164,7 @@ class IntentParser:
                 f"LLM이 응답을 반환하지 않았습니다. 인텐트: {intent[:80]}"
             )
 
-        # ── LLM 자체 거부 감지 (B-1) ─────────────────────────────
-        # LLM이 {"status": "rejected", "rejection_reason": "..."} 형식으로 반환한 경우
+        # ── LLM 자체 거부 감지 ────────────────────────────────────
         if raw.get("status") == "rejected":
             reason_raw = str(raw.get("rejection_reason", "")).strip().lower()
             valid_reasons = {"ambiguous", "contradictory", "unsupported", "unknown_entity"}
@@ -142,9 +176,17 @@ class IntentParser:
                 rejection_detail=detail or f"LLM rejected: {reason}",
             )
 
-        ir = IntentIR.from_llm_output(raw)
+        # ── rules 배열 파싱 ──────────────────────────────────────
+        rules_raw = raw.get("rules")
+        if rules_raw and isinstance(rules_raw, list):
+            return self._parse_rules(rules_raw, raw.get("description", ""))
 
-        # ── 토폴로지 그라운딩 검증 (B-2) ─────────────────────────
+        # ── 하위 호환: 구형 단일 JSON 형식 처리 ─────────────────
+        return self._parse_single(raw)
+
+    def _parse_single(self, raw: dict) -> IntentPrediction:
+        """단일 룰 JSON → IntentPrediction(program=IntentIR)"""
+        ir = IntentIR.from_llm_output(raw)
         if self.topology is not None:
             violation = self.topology.check_intent(
                 src_ip=ir.src_ip,
@@ -158,8 +200,52 @@ class IntentParser:
                     rejection_reason=reason,
                     rejection_detail=detail,
                 )
-
         return IntentPrediction(status="accepted", program=ir)
+
+    def _parse_rules(self, rules_raw: list, description: str) -> IntentPrediction:
+        """rules 배열 JSON → 단일 또는 복합 IntentPrediction"""
+        parsed: list[IntentIR] = []
+        for i, rule_raw in enumerate(rules_raw):
+            try:
+                ir = IntentIR.from_llm_output(rule_raw)
+            except Exception as exc:
+                return IntentPrediction(
+                    status="rejected",
+                    rejection_reason="ambiguous",
+                    rejection_detail=f"rule[{i}] 파싱 실패: {exc}",
+                )
+            # 토폴로지 그라운딩 검증
+            if self.topology is not None:
+                violation = self.topology.check_intent(
+                    src_ip=ir.src_ip,
+                    dst_ip=ir.dst_ip,
+                    device_hint=ir.device_hint,
+                )
+                if violation is not None:
+                    reason, detail = violation
+                    return IntentPrediction(
+                        status="rejected",
+                        rejection_reason=reason,
+                        rejection_detail=f"rule[{i}]: {detail}",
+                    )
+            parsed.append(ir)
+
+        if not parsed:
+            return IntentPrediction(
+                status="rejected",
+                rejection_reason="ambiguous",
+                rejection_detail="LLM이 rules 배열을 비워서 반환했습니다.",
+            )
+
+        # 단일 룰이면 program으로 반환 (하위 호환)
+        if len(parsed) == 1:
+            return IntentPrediction(status="accepted", program=parsed[0])
+
+        # 복합 룰
+        return IntentPrediction(
+            status="accepted",
+            compound=CompoundIntentIR(rules=parsed, description=description),
+        )
 
     def _build_system_prompt(self, intent: str) -> str:
         """토폴로지 컨텍스트 + RAG 예시를 system prompt에 추가"""

@@ -43,6 +43,69 @@ class StaticResult:
         return f"{' | '.join(parts)} → {result_str}"
 
 
+def _check_intra_conflicts(flows: list[dict]) -> list[dict]:
+    """
+    복합 인텐트에서 생성된 룰들 간의 내부 충돌을 검사한다.
+
+    주요 체크:
+    - Shadowing: 높은 priority의 catch-all 룰이 낮은 priority 룰을 가림
+    - 같은 (device, criteria)에 서로 다른 action (forward vs block)
+    """
+    conflicts = []
+    for i in range(len(flows)):
+        for j in range(i + 1, len(flows)):
+            f1, f2 = flows[i], flows[j]
+            if f1.get("deviceId") != f2.get("deviceId"):
+                continue  # 다른 스위치는 충돌 없음
+
+            c1 = {c["type"]: c for c in f1.get("selector", {}).get("criteria", [])}
+            c2 = {c["type"]: c for c in f2.get("selector", {}).get("criteria", [])}
+
+            # 두 룰의 criteria가 완전히 겹치는지 확인
+            shared_types = set(c1.keys()) & set(c2.keys())
+            if not shared_types:
+                continue
+
+            # ETH_TYPE + IPV4_SRC + IPV4_DST + IP_PROTO + (TCP/UDP_DST) 모두 일치하면 충돌
+            key_types = {"ETH_TYPE", "IPV4_SRC", "IPV4_DST", "IP_PROTO"}
+            if key_types.issubset(shared_types):
+                match = all(c1[t] == c2[t] for t in key_types if t in c1 and t in c2)
+                if match:
+                    i1 = f1.get("treatment", {}).get("instructions", [])
+                    i2 = f2.get("treatment", {}).get("instructions", [])
+                    a1 = next((x["type"] for x in i1), "UNKNOWN")
+                    a2 = next((x["type"] for x in i2), "UNKNOWN")
+                    if a1 != a2:
+                        conflicts.append({
+                            "conflict_type": "Intra-Shadowing",
+                            "reason": (
+                                f"복합 인텐트 내 rule[{i}]({a1})과 rule[{j}]({a2})가 "
+                                f"동일한 트래픽에 상반된 액션을 지정합니다."
+                            ),
+                            "rule_indices": [i, j],
+                        })
+
+            # 한쪽이 catch-all (IP_PROTO, port 없음)이고 다른 쪽이 특정 포트를 가진 경우 경고
+            p1 = f1.get("priority", 0)
+            p2 = f2.get("priority", 0)
+            higher, lower = (f1, f2) if p1 >= p2 else (f2, f1)
+            hi_c = {c["type"] for c in higher.get("selector", {}).get("criteria", [])}
+            lo_c = {c["type"] for c in lower.get("selector", {}).get("criteria", [])}
+            if {"ETH_TYPE", "IPV4_SRC", "IPV4_DST"}.issubset(hi_c) and \
+               "IP_PROTO" not in hi_c and "IP_PROTO" in lo_c:
+                conflicts.append({
+                    "conflict_type": "Intra-Shadowing",
+                    "reason": (
+                        f"복합 인텐트 내 catch-all 룰(priority={higher.get('priority')})이 "
+                        f"특정 프로토콜 룰(priority={lower.get('priority')})을 가릴 수 있습니다. "
+                        f"특정 룰의 priority를 더 높게 설정하세요."
+                    ),
+                    "rule_indices": [i, j],
+                })
+
+    return conflicts
+
+
 def validate(
     flowrule: dict,
     existing_flows: Optional[list[dict]] = None,
@@ -84,6 +147,12 @@ def validate(
                     conflicts.append(c)
         except Exception as exc:
             warnings.append(f"충돌 탐지 중 오류 발생: {exc}")
+
+    # ── Step 3: 복합 인텐트 내부 충돌 검사 ──────────────────────
+    if not schema_errors and flowrule.get("intent_action") == "compound":
+        intra = _check_intra_conflicts(flowrule.get("flows", []))
+        for c in intra:
+            conflicts.append(c)
 
     # ── 최종 판정 ─────────────────────────────────────────────
     passed = (len(schema_errors) == 0) and (len(conflicts) == 0)

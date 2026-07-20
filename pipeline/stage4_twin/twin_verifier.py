@@ -198,11 +198,16 @@ class TwinVerifier:
             )
 
         # FlowRule에서 action 추출
+        # intent_action 필드 우선 사용 (compiler가 명시적으로 기록)
+        # 없으면 flow rule 구조로 역추론 (하위 호환)
         flows = flowrule.get("flows", [])
         flow = flows[0] if flows else {}
-        instructions = flow.get("treatment", {}).get("instructions", [])
-        has_output = any(i.get("type") == "OUTPUT" for i in instructions)
-        action = "forward" if has_output else "block"
+        if "intent_action" in flowrule:
+            action = flowrule["intent_action"]
+        else:
+            instructions = flow.get("treatment", {}).get("instructions", [])
+            has_output = any(i.get("type") == "OUTPUT" for i in instructions)
+            action = "forward" if has_output else "block"
 
         # 타겟 pair 결정 및 프로토콜/포트 추출
         criteria = flow.get("selector", {}).get("criteria", [])
@@ -360,7 +365,8 @@ class TwinVerifier:
                             time.sleep(1)
 
             # ── 6b. intent 동작 확인 ────────────────────────────────────
-            expect_reach = (action == "forward")
+            # block만 차단 확인, 나머지(forward/qos/reroute)는 도달 확인
+            expect_reach = (action != "block")
             if flow_proto in ("tcp", "udp") and flow_dst_port is not None:
                 proto_label = f"{flow_proto.upper()}/{flow_dst_port}"
                 self._log(

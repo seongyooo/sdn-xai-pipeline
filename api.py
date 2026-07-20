@@ -157,12 +157,21 @@ def _run_pipeline(req: RunRequest, q: std_queue.Queue) -> None:
             finish("REJECT")
             return
 
-        ir = prediction.program
-        progress(1, f"파싱 완료 → action={ir.action}, device={ir.device_hint}"
-                    + (f", src={ir.src_ip}" if ir.src_ip else "")
-                    + (f", dst={ir.dst_ip}" if ir.dst_ip else ""))
-        result["stage1"] = ir.to_dict()
-        done(1, ir.to_dict(), t)
+        if prediction.compound:
+            compound = prediction.compound
+            n = len(compound.rules)
+            progress(1, f"복합 인텐트 파싱 완료 → {n}개 룰: "
+                        + ", ".join(f"rule[{i}]={r.action}" for i, r in enumerate(compound.rules)))
+            result["stage1"] = compound.to_dict()
+            ir = None
+        else:
+            ir = prediction.program
+            progress(1, f"파싱 완료 → action={ir.action}, device={ir.device_hint}"
+                        + (f", src={ir.src_ip}" if ir.src_ip else "")
+                        + (f", dst={ir.dst_ip}" if ir.dst_ip else ""))
+            result["stage1"] = ir.to_dict()
+            compound = None
+        done(1, result["stage1"], t)
     except Exception as exc:
         error(1, str(exc))
         finish("REJECT")
@@ -171,17 +180,23 @@ def _run_pipeline(req: RunRequest, q: std_queue.Queue) -> None:
     # ── Stage 2: FlowRule Compile ─────────────────────────────────────────────
     t = start(2, "FlowRule Compile")
     try:
-        from stage2_flowrule.compiler import compile_flowrule
+        from stage2_flowrule.compiler import compile_flowrule, compile_compound
 
-        progress(2, f"device_hint 변환 중... ({ir.device_hint!r} → ONOS device ID)")
-        progress(2, f"OpenFlow criteria 생성 중... (action={ir.action})")
-        flowrule = compile_flowrule(ir)
-        flows = flowrule.get("flows", [])
-        f0 = flows[0] if flows else {}
-        criteria_n = len(f0.get("selector", {}).get("criteria", []))
-        priority = f0.get("priority", "?")
-        device_id = f0.get("deviceId", "?")
-        progress(2, f"컴파일 완료 → deviceId={device_id}, priority={priority}, criteria={criteria_n}개")
+        if compound:
+            progress(2, f"복합 인텐트 컴파일 중... ({len(compound.rules)}개 sub-rule)")
+            flowrule = compile_compound(compound)
+            flows = flowrule.get("flows", [])
+            progress(2, f"컴파일 완료 → 총 {len(flows)}개 FlowRule 생성")
+        else:
+            progress(2, f"device_hint 변환 중... ({ir.device_hint!r} → ONOS device ID)")
+            progress(2, f"OpenFlow criteria 생성 중... (action={ir.action})")
+            flowrule = compile_flowrule(ir)
+            flows = flowrule.get("flows", [])
+            f0 = flows[0] if flows else {}
+            criteria_n = len(f0.get("selector", {}).get("criteria", []))
+            priority = f0.get("priority", "?")
+            device_id = f0.get("deviceId", "?")
+            progress(2, f"컴파일 완료 → deviceId={device_id}, priority={priority}, criteria={criteria_n}개")
         result["stage2"] = flowrule
         done(2, flowrule, t)
     except Exception as exc:

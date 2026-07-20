@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-from models.intent_ir import IntentIR
+from models.intent_ir import IntentIR, CompoundIntentIR
 
 # ── 서수 → 숫자 매핑 ──────────────────────────────────────────
 SWITCH_ID_ORDINALS: dict[str, int] = {
@@ -208,14 +208,14 @@ def compile_flowrule(ir: IntentIR) -> dict:
     if ir.action == "block":
         criteria = _build_criteria(ir)
         treatment = {"instructions": [{"type": "NOACTION"}]}
-        return {"flows": [_make_flow(device_id, priority, criteria, treatment)]}
+        return {"intent_action": "block", "flows": [_make_flow(device_id, priority, criteria, treatment)]}
 
     # ── forward ───────────────────────────────────────────────
     elif ir.action == "forward":
         criteria = _build_criteria(ir)
         out = str(ir.out_port) if ir.out_port is not None else "NORMAL"
         treatment = {"instructions": [{"type": "OUTPUT", "port": out}]}
-        return {"flows": [_make_flow(device_id, priority, criteria, treatment)]}
+        return {"intent_action": "forward", "flows": [_make_flow(device_id, priority, criteria, treatment)]}
 
     # ── qos ───────────────────────────────────────────────────
     elif ir.action == "qos":
@@ -225,7 +225,7 @@ def compile_flowrule(ir: IntentIR) -> dict:
         if ir.queue_id is not None:
             instructions.append({"type": "QUEUE", "queueId": ir.queue_id})
         treatment = {"instructions": instructions}
-        return {"flows": [_make_flow(device_id, priority, criteria, treatment)]}
+        return {"intent_action": "qos", "flows": [_make_flow(device_id, priority, criteria, treatment)]}
 
     # ── reroute ───────────────────────────────────────────────
     # reroute는 forward와 동일하되, alt_out_port를 우선 사용 (B2 fix: is not None 비교)
@@ -234,7 +234,7 @@ def compile_flowrule(ir: IntentIR) -> dict:
         out_port = ir.alt_out_port if ir.alt_out_port is not None else ir.out_port
         out = str(out_port) if out_port is not None else "NORMAL"
         treatment = {"instructions": [{"type": "OUTPUT", "port": out}]}
-        return {"flows": [_make_flow(device_id, priority, criteria, treatment)]}
+        return {"intent_action": "reroute", "flows": [_make_flow(device_id, priority, criteria, treatment)]}
 
     # ── sfc ───────────────────────────────────────────────────
     elif ir.action == "sfc":
@@ -275,7 +275,7 @@ def compile_flowrule(ir: IntentIR) -> dict:
 
         flows = [ingress_flow, egress_flow]
 
-        result: dict = {"flows": flows}
+        result: dict = {"intent_action": "sfc", "flows": flows}
         # sfc_chain 메타데이터 (ONOS에는 사용 안 하지만 XAI 설명용)
         if ir.waypoints:
             result["sfc_chain"] = ir.waypoints
@@ -285,3 +285,36 @@ def compile_flowrule(ir: IntentIR) -> dict:
 
     else:
         raise CompileError(f"지원하지 않는 action: '{ir.action}'")
+
+
+def compile_compound(compound: CompoundIntentIR) -> dict:
+    """
+    CompoundIntentIR → 복합 ONOS FlowRule JSON 컴파일.
+
+    각 sub-rule을 compile_flowrule()로 컴파일하고 flows를 합산한다.
+
+    Returns:
+        {
+          "intent_action": "compound",
+          "description": "...",
+          "sub_rules": [{"intent_action": ..., "flows": [...]}, ...],
+          "flows": [flow1, flow2, ...]   ← 모든 sub-rule flows 합산
+        }
+    """
+    sub_rules = []
+    all_flows = []
+
+    for i, ir in enumerate(compound.rules):
+        try:
+            result = compile_flowrule(ir)
+        except CompileError as exc:
+            raise CompileError(f"rule[{i}] ({ir.action}) 컴파일 오류: {exc}") from exc
+        sub_rules.append(result)
+        all_flows.extend(result.get("flows", []))
+
+    return {
+        "intent_action": "compound",
+        "description": compound.description,
+        "sub_rules": sub_rules,
+        "flows": all_flows,
+    }
