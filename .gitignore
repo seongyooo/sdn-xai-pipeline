@@ -265,4 +265,5 @@ logs/
 logs/eval_results.csv
 
 # 평가/실험 결과
-results/
+results/experiments/eval/logs/
+experiments/eval/reports/
