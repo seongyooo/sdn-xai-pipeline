@@ -1,317 +1,314 @@
 # 정량 평가 프레임워크 계획
 
-> 작성: 2026-07-20  
+> 작성: 2026-07-20 / 최종 수정: 2026-07-21  
 > 참조: `sdn_intent-framework/experiments/e1` 설계 구조를 직접 계승  
-> 모델: Gemini (google-genai SDK)  
+> 모델: `gemini-3.1-flash-lite` (google-genai SDK)  
 > RAG: 사용 안 함 — 정적 few-shot 데모만 사용 (E1-C/D 방식)
 
 ---
 
 ## 1. 실험 구조 개요
 
-두 개의 독립적인 실험으로 구성한다.
+세 개의 독립적인 실험으로 구성한다.
 
-| 실험 | 측정 대상 | E1 대응 |
+| 실험 | 측정 대상 | 범위 |
 |---|---|---|
-| **Exp-1** | Stage 1 인텐트 파싱 정확도 (IR 슬롯 정확도) | E1 직접 계승 |
-| **Exp-2** | 전체 파이프라인 FlowRule 정확도 (Stage 1→2→3) | E1에 없는 신규 |
+| **Exp-1** | Stage 1 인텐트 파싱 정확도 (IR 슬롯 정확도) | Stage 1 출력만 채점 |
+| **Exp-2** | Stage 1→2→3 파이프라인 통과율 | 파이프라인 실행 포함 |
+| **Exp-3** | 전체 파이프라인 블랙박스 평가 | Stage 1~6 End-to-End |
 
-Exp-1은 "파싱이 얼마나 정확한가"를, Exp-2는 "파싱이 맞아도 FlowRule이 올바른가"를 측정한다.  
-두 실험을 분리함으로써 IR 중간 표현 레이어의 기여를 독립적으로 정량화할 수 있다.
+**현재 구현 범위:** Exp-1 (Stage 1 파싱 정확도)만 선행 구현.  
+Exp-2(Stage 1→2→3)와 Exp-3(전체 E2E)은 별도 실험으로 분리 진행.
 
 ---
 
 ## 2. Exp-1: Stage 1 파싱 정확도
 
-### 2-1. Treatment 설계 (E1 완전 계승)
+### 2-1. Treatment 설계
 
-E1과 동일하게 **출력 형식 × 입력 구성** 조합으로 treatment를 정의한다.
-
-| Treatment | 출력 형식 | Few-Shot | 토폴로지 Grounding | E1 대응 |
+| Treatment | 출력 형식 | Few-Shot | 토폴로지 Grounding | 비교 목적 |
 |---|---|---|---|---|
-| **T-A** | ONOS FlowRule JSON 직접 출력 | ❌ | ❌ | E1-A |
-| **T-B** | IntentIR | ❌ | ❌ | E1-B |
-| **T-C** | IntentIR | ✅ (정적 5개) | ❌ | E1-C |
-| **T-D** | IntentIR | ✅ (정적 5개) | ✅ | E1-D |
+| **T-A** | ONOS FlowRule JSON 직접 출력 | ❌ | ❌ | 핵심 베이스라인 — IR 없이 LLM 직접 생성 |
+| **T-B** | IntentIR | ❌ | ❌ | IR 효과만 분리 |
+| **T-C** | IntentIR | ✅ (정적 5개) | ❌ | Few-shot 효과 분리 |
+| **T-D** | IntentIR | ✅ (정적 5개) | ✅ | 현재 파이프라인 최상 설정 |
 
-**T-A의 역할 (핵심 베이스라인):**  
-LLM이 IR과 컴파일러 없이 직접 ONOS FlowRule JSON을 생성하는 경우. T-B~D와 비교하여 "IR + 결정론적 컴파일러" 방식의 실질적 이점을 수치로 보여준다. 이것이 본 논문의 핵심 기여(C2) 검증이다.
+**비교 포인트:**
 
-**Few-Shot (T-C, T-D):**  
-RAG(동적 검색) 아님. E1의 `demonstrations.json`처럼 5개의 고정 예시를 시스템 프롬프트에 삽입한다. 예시는 실험 데이터셋에 포함되지 않는 phantom 엔티티(demo-client, lab-red 등)를 사용해 데이터 유출을 방지한다.
+| 비교 | 측정하는 효과 |
+|---|---|
+| T-A vs T-B | IR + 결정론적 컴파일러의 순수 기여 → **논문의 핵심 주장 검증** |
+| T-B vs T-C | Few-shot 단독 기여 |
+| T-C vs T-D | Grounding 단독 기여 |
+| T-B vs T-D | Few-shot + Grounding 결합 효과 |
 
-**Grounding (T-D):**  
-토폴로지 인벤토리(허용된 호스트/스위치/포트 목록)를 시스템 프롬프트에 JSON으로 삽입.
+**T-A 채점 방식:**  
+T-A는 IntentIR이 아닌 ONOS FlowRule JSON을 출력한다. 공통 지표(`schema_validity`, `status_match`)는 T-A용 FlowRule 스키마로 채점하고, 슬롯 정확도 지표는 T-B~D(IntentIR 기반)와 직접 비교하지 않는다. T-A의 주된 비교 지표는 `schema_validity`와 `false_rejection_rate`이다.
 
 ### 2-2. 시스템 프롬프트 구성
 
 ```
-[T-A 프롬프트]
-SYSTEM_DIRECT_FLOW (ONOS JSON 생성 지시)
+[T-A]  SYSTEM_DIRECT_FLOW (ONOS FlowRule JSON 생성 지시)
 
-[T-B 프롬프트]  
-SYSTEM_IR (IntentIR 생성 지시)
+[T-B]  SYSTEM_IR (IntentIR 생성 지시)
 
-[T-C 프롬프트]
-SYSTEM_IR
-+ "\n\nExamples:\n" + demonstrations (5개 고정)
+[T-C]  SYSTEM_IR
+       + "\n\nExamples:\n" + demonstrations.json (5개 고정)
 
-[T-D 프롬프트]
-SYSTEM_IR
-+ "\n\nExamples:\n" + demonstrations
-+ "\n\nAuthorized topology inventory:\n" + topology_eval.json
+[T-D]  SYSTEM_IR
+       + "\n\nExamples:\n" + demonstrations.json
+       + "\n\nAuthorized topology inventory:\n" + topology_eval.json
 ```
 
-### 2-3. 모델 비교 (보조 실험)
+### 2-3. 모델
 
-T-D (최상 설정)에서 Gemini 모델 크기별 성능을 비교한다. 파이프라인 기본값 선택의 근거가 된다.
-
-| 모델 ID | 분류 | 비고 |
-|---|---|---|
-| `gemini-2.0-flash-lite` | 소형 | 현재 파이프라인 기본값 |
-| `gemini-2.0-flash` | 중형 | |
-| `gemini-2.5-flash` | 고성능 | |
+`gemini-3.1-flash-lite` 단일 모델만 사용. 추후 여건에 따라 모델 비교 보조 실험 추가 가능.
 
 ---
 
-## 3. Exp-2: 전체 파이프라인 FlowRule 정확도
+## 3. Exp-2: Stage 1→2→3 파이프라인 통과율 (별도 실험)
 
-### 3-1. 설계 의도
-
-E1에는 없는 실험. Stage 1 파싱이 정확해도 Stage 2 컴파일러가 올바른 ONOS FlowRule을 생성하지 못하거나, Stage 3 정적 검증에서 충돌이 발생할 수 있다. 이 실험은 **파이프라인 전체를 블랙박스로 보고** 최종 FlowRule의 품질을 측정한다.
-
-### 3-2. Treatment
-
-T-D (최상 설정, Gemini-2.0-flash) 고정으로 Stage 1~3을 통과한 FlowRule을 평가한다.
-
-### 3-3. 평가 항목
+T-D (최상 설정) 고정으로 Stage 1 파싱 → Stage 2 컴파일 → Stage 3 정적 검증까지의 통과율을 측정한다.
 
 | 지표 | 정의 |
 |---|---|
-| `compile_success_rate` | IR → FlowRule 컴파일 성공 비율 (CompileError 없음) |
-| `schema_validity_rate` | 생성된 FlowRule이 ONOS Flow REST API 스키마를 통과하는 비율 |
-| `static_pass_rate` | Stage 3 정적 검증 PASS 비율 (신규 룰 기준, 기존 룰 없다고 가정) |
-| `end_to_end_approve_rate` | Stage 1~3 모두 통과 (APPROVE 도달) 비율 |
-| `flowrule_exact_match` | 생성된 FlowRule이 gold FlowRule과 일치하는 비율 (gold가 있는 케이스만) |
-
-`flowrule_exact_match`는 데이터셋에 gold FlowRule이 있는 케이스만 평가한다. 현재 `intents_v2.jsonl`에는 gold FlowRule이 없으므로, 핵심 케이스 20개에 gold FlowRule을 수동으로 작성하는 것을 별도 작업으로 계획한다.
+| `compile_success_rate` | IR → FlowRule 컴파일 성공 비율 |
+| `schema_validity_rate` | FlowRule이 ONOS REST API 스키마 통과 비율 |
+| `static_pass_rate` | Stage 3 정적 검증 PASS 비율 |
+| `end_to_end_approve_rate` | Stage 1~3 모두 통과 비율 |
 
 ---
 
-## 4. 데이터셋
+## 4. Exp-3: 전체 파이프라인 블랙박스 평가 (별도 실험)
 
-### 4-1. 현황 (`data/intents_v2.jsonl`, 100케이스)
+Stage 1~6 전 과정을 블랙박스로 보고 최종 FlowRule 배포 성공 여부를 측정한다. 디지털 트윈(Stage 4) 통과 여부, XAI 설명 생성(Stage 5) 품질 등을 포함한다.
 
-| 카테고리 | 수 | accepted | rejected |
+---
+
+## 5. 데이터셋
+
+### 5-1. 신규 평가 데이터셋 (`experiments/eval/data/`)
+
+기존 `data/intents_v2.jsonl`(E1 스키마)과 별개로, **파이프라인 IntentIR 스키마를 직접 gold로 사용**하는 신규 데이터셋을 작성했다. 정규화 레이어 불필요.
+
+#### Small 토폴로지 (기본 실험)
+
+| 항목 | 값 |
+|---|---|
+| 파일 | `experiments/eval/data/intents_eval.jsonl` |
+| 토폴로지 | `topology_eval.json` (h1–h4, s1–s4) |
+| 총 케이스 | 60 |
+| accepted : rejected | 54 : 6 = **9 : 1** |
+| 카테고리 | 6개 × 10케이스 (accepted 9 + rejected 1) |
+
+| 카테고리 | accepted | rejected | 거부 이유 |
 |---|---|---|---|
-| forwarding | 15 | 15 | 0 |
-| security | 15 | 15 | 0 |
-| qos | 10 | 10 | 0 |
-| sfc | 25 | 25 | 0 |
-| reroute | 25 | 25 | 0 |
-| ambiguous_unsupported | 10 | 0 | 10 |
-| **합계** | **100** | **90** | **10** |
+| forwarding | 9 | 1 | ambiguous |
+| security | 9 | 1 | unknown_entity |
+| qos | 9 | 1 | unsupported |
+| sfc | 9 | 1 | ambiguous |
+| reroute | 9 | 1 | contradictory |
+| compound | 9 | 1 | unknown_entity |
 
-Rejection 분포: ambiguous 3 / contradictory 2 / unknown_entity 3 / unsupported 2
+#### Large 토폴로지 (일반화 실험)
 
-복합(multi-rule) 케이스: 25개 (모두 sfc 카테고리)
-
-### 4-2. 스키마 차이와 정규화
-
-`intents_v2.jsonl`의 gold는 `sdn_intent-framework` 스키마를, 파이프라인은 자체 `IntentIR` 스키마를 사용한다. 채점 시 정규화 레이어가 필요하다.
-
-**Action 정규화 (gold → pipeline):**
-
-| gold action | pipeline action |
+| 항목 | 값 |
 |---|---|
-| `"forward"` | `"forward"` |
-| `"allow"` | `"forward"` |
-| `"deny"` | `"block"` |
-| `"prioritize"` | `"qos"` |
+| 파일 | `experiments/eval/data/intents_eval_large.jsonl` |
+| 토폴로지 | `topology_large.json` (h1–h16, s1–s8, IDS at s1:9 & s3:9) |
+| 총 케이스 | 60 |
+| accepted : rejected | 54 : 6 = **9 : 1** |
+| 카테고리 | 6개 × 10케이스 (accepted 9 + rejected 1) |
 
-**필드 이름 정규화:**
+| 카테고리 | accepted | rejected | 거부 이유 |
+|---|---|---|---|
+| forwarding | 9 | 1 | unknown_entity |
+| security | 9 | 1 | ambiguous |
+| qos | 9 | 1 | contradictory |
+| sfc | 9 | 1 | unsupported |
+| reroute | 9 | 1 | ambiguous |
+| compound | 9 | 1 | contradictory |
 
-| gold 필드 | pipeline 필드 |
+**Large 실험 목적:** 토폴로지 규모 증가 시 hallucination_rate 변화와 grounding 효과의 스케일 강건성을 측정. Small 실험 완료 후 보완 방향 확정 후 진행.
+
+### 5-2. Gold 정의 및 검증
+
+**Gold = 수동 작성한 정답 IntentIR JSON.** 각 케이스에 대해 "LLM이 이렇게 출력해야 맞다"는 기준값.
+
+**Gold Validation (미완료):** 수락 케이스 54개(Small)의 gold JSON을 실제 파이프라인 Stage 1→2에 통과시켜 컴파일 성공을 확인해야 gold 자체의 정확성이 보장됨. 현재 미검증 상태이며 run_exp1.py 구현 전에 완료 권장.
+
+### 5-3. Gold 스키마
+
+```json
+// 수락 케이스 (단일 룰)
+{
+  "case_id": "FWD-01",
+  "category": "forwarding",
+  "intent_text": "...",
+  "gold": {
+    "status": "accepted",
+    "action": "forward|block|qos|sfc|reroute",
+    "intent_type": "forwarding|security|qos|sfc|reroute",
+    "selector": {
+      "source": {"host": "h1", "ip": "10.0.0.1"},
+      "destination": {"host": "h2", "ip": "10.0.0.2"},
+      "protocol": "tcp|udp|icmp|null",
+      "dst_port": 80
+    },
+    "enforcement": {"device": "switch 1", "egress_port": 2},
+    "qos": null,
+    "routing": null
+  }
+}
+
+// 거부 케이스
+{
+  "case_id": "FWD-R01",
+  "category": "forwarding",
+  "rejection_type": "ambiguous",
+  "intent_text": "...",
+  "gold": {"status": "rejected", "rejection_reason": "ambiguous"}
+}
+
+// 복합 케이스
+{
+  "case_id": "CMP-01",
+  "gold": {
+    "status": "accepted",
+    "rules": [{...rule1...}, {...rule2...}]
+  }
+}
+```
+
+---
+
+## 6. 평가 지표 (Exp-1)
+
+### 6-1. 공통 지표 (T-A ~ T-D)
+
+| 지표 | 정의 |
 |---|---|
-| `selector.destination_port` | `selector.dst_port` |
-| `selector.source_port` | `selector.src_port` |
-| `selector.ingress_port` | `selector.in_port` |
-| `enforcement.egress_port` | `enforcement.egress_port` (동일, int 변환) |
-| `enforcement.device` | `enforcement.device` (alias 해석 필요) |
+| `schema_validity` | LLM 출력 파싱 성공 비율 (T-A: FlowRule 스키마, T-B~D: IntentIR 스키마) |
+| `status_match` | gold accepted/rejected ↔ 예측 일치 비율 |
+| `false_rejection_rate` | 수락해야 할 케이스를 rejected로 잘못 예측한 비율 |
+| `rejection_recall` | 거부 케이스를 올바르게 rejected로 예측한 비율 |
+| `rejection_reason_match` | rejection_reason까지 gold와 일치하는 비율 |
 
-**Device alias 정규화:**  
-gold에는 ONOS device_id (`of:0000000000000001`), 파이프라인 출력에는 자연어(`switch 1`, `s1`)가 오므로 topology_eval.json의 alias 테이블로 통일한다.
+### 6-2. IntentIR 슬롯 지표 (T-B ~ T-D만 적용)
 
-### 4-3. 데이터셋 보강 계획
-
-현재 데이터셋의 한계:
-- compound(multi-rule) 케이스가 sfc 25개뿐 — forward+block 복합 미포함
-- rejected 케이스 10개 — contradictory가 2개뿐
-
-추가 케이스:
-
-| 유형 | 추가 수 | 예시 인텐트 |
+| 슬롯 | gold 경로 | 비교 방식 |
 |---|---|---|
-| compound (forward+block) | 5 | "Allow HTTP from h1 to h2, but block SSH from h1 to h2 on switch 1" |
-| compound (block+qos) | 3 | "Block ICMP from h1 to h3, and apply QoS queue 2 for video from h2 to h4" |
-| contradictory (추가) | 3 | "Allow TCP 80 from h1 to h2 on switch 1 and block TCP 80 from h1 to h2 on switch 1" |
-| unknown_entity (추가) | 2 | "Route traffic from h9 to h4 via switch 1" |
+| `action` | `gold.action` | exact (no alias — 파이프라인 스키마 동일) |
+| `intent_type` | `gold.intent_type` | exact |
+| `source_host` | `gold.selector.source.host` | case-insensitive |
+| `source_ip` | `gold.selector.source.ip` | /32 정규화 후 exact |
+| `destination_host` | `gold.selector.destination.host` | case-insensitive |
+| `destination_ip` | `gold.selector.destination.ip` | /32 정규화 후 exact |
+| `protocol` | `gold.selector.protocol` | exact |
+| `dst_port` | `gold.selector.dst_port` | int 정규화 |
+| `device` | `gold.enforcement.device` | topology alias 해석 후 exact |
+| `egress_port` | `gold.enforcement.egress_port` | int 정규화 |
+| `alt_egress_port` | `gold.enforcement.alt_egress_port` | int 정규화 (SFC만) |
+| `queue` | `gold.qos.queue` | int 정규화 (QoS만) |
+| `waypoints` | `gold.routing.waypoints` | 집합 비교 |
+| `avoid_device` | `gold.routing.avoid_device` | alias 해석 |
 
-→ **목표: 113케이스 (accepted 100 / rejected 13)**
+- Gold에서 `null`인 슬롯은 채점 제외
+- 복합 인텐트: order-agnostic best-match alignment 적용 (predicted rules를 gold rules 순서에 최적 매칭)
 
----
-
-## 5. 평가 지표 (Exp-1 상세)
-
-### 5-1. 주요 지표 (E1 직접 계승)
-
-#### `response_schema_validity`
-LLM 출력이 스키마 검증(T-A: ONOS FlowSet 스키마, T-B~D: IntentPrediction)을 통과한 비율.
-```
-schema_validity = 파싱 성공 케이스 / 전체 케이스
-```
-
-#### `normalized_exact_match`
-전체 IR이 gold와 슬롯 단위로 완전 일치하는 비율. 정규화 후 비교.
-```
-exact_match = 완전 일치 케이스 / 전체 케이스
-```
-조건: status 일치 + (rejected면 reason 일치) + (accepted면 rule 수 일치 + 모든 슬롯 일치)
-
-#### `normalized_rule_count_accuracy`
-accepted 케이스에서 예측 rule 수가 gold와 일치하는 비율.
-```
-rule_count_accuracy = rule 수 일치 케이스 / accepted 케이스
-```
-
-#### `normalized_slot_accuracy` (슬롯별)
-
-추적 슬롯 목록:
-
-| 슬롯 | gold 경로 | pipeline 경로 | 비교 |
-|---|---|---|---|
-| `action` | `rules[*].action` | `rules[*].action` | alias 매핑 후 exact |
-| `intent_type` | `rules[*].intent_type` | `rules[*].intent_type` | exact |
-| `source_host` | `rules[*].selector.source.host` | `rules[*].selector.source.host` | case-insensitive |
-| `source_ip` | `rules[*].selector.source.ip` | `rules[*].selector.source.ip` | IP /32 정규화 |
-| `destination_host` | `rules[*].selector.destination.host` | `rules[*].selector.destination.host` | case-insensitive |
-| `destination_ip` | `rules[*].selector.destination.ip` | `rules[*].selector.destination.ip` | IP /32 정규화 |
-| `protocol` | `rules[*].selector.protocol` | `rules[*].selector.protocol` | exact |
-| `dst_port` | `rules[*].selector.destination_port` | `rules[*].selector.dst_port` | int 정규화 |
-| `src_port` | `rules[*].selector.source_port` | `rules[*].selector.src_port` | int 정규화 |
-| `device` | `rules[*].enforcement.device` | `rules[*].enforcement.device` | alias 해석 후 exact |
-| `egress_port` | `rules[*].enforcement.egress_port` | `rules[*].enforcement.egress_port` | int 정규화 |
-| `queue` | `rules[*].qos.queue` | `rules[*].qos.queue` | int 정규화 |
-| `avoid_device` | `rules[*].enforcement.avoid_device` | `rules[*].routing.avoid_device` | alias 해석 |
-| `waypoints` | `program.sfc_chain` | `rules[*].routing.waypoints` | 집합 비교 |
+### 6-3. 환각 지표 (T-B ~ T-D)
 
 ```
-slot_accuracy[slot] = Σ(slot 정답 수) / Σ(expected rule 수)
+hallucinated_entity_rate = 환각 엔티티 수 / 전체 예측 엔티티 수
 ```
+검사 대상: `source.host`, `destination.host`, `source.ip`, `destination.ip`, `enforcement.device`  
+기준: topology JSON의 alias 테이블에 없으면 환각으로 판정.
 
-#### `hallucinated_entity_rate`
-예측에 등장하는 엔티티 중 topology_eval.json alias에 없는 비율.
-```
-hallucination_rate = 환각 엔티티 수 / 전체 예측 엔티티 수
-```
-검사 대상: source.host, destination.host, source.ip, destination.ip, enforcement.device
-
-#### `required_rejection_rate` (전체 + reason별)
-```
-rejection_recall = 올바르게 rejected / expected-rejected 전체
-rejection_recall_by_reason["ambiguous"] = ...
-rejection_recall_by_reason["contradictory"] = ...
-rejection_recall_by_reason["unknown_entity"] = ...
-rejection_recall_by_reason["unsupported"] = ...
-```
-
-#### `false_rejection_rate`
-```
-false_rejection_rate = 잘못 rejected / expected-accepted 전체
-```
-
-### 5-2. 보조 지표
+### 6-4. 보조 지표
 
 | 지표 | 설명 |
 |---|---|
 | `mean_latency_ms` | 케이스당 평균 응답 지연 |
-| `mean_input_tokens` | 케이스당 평균 입력 토큰 수 |
-| `mean_output_tokens` | 케이스당 평균 출력 토큰 수 |
+| `mean_input_tokens` | 케이스당 평균 입력 토큰 |
+| `mean_output_tokens` | 케이스당 평균 출력 토큰 |
 | `transport_failure_rate` | API 연결 오류 비율 |
 
 ---
 
-## 6. 실험 실행 설계
+## 7. 실험 실행 설계
 
-### 6-1. 반복 및 시드
+### 7-1. 반복 및 시드
 
-- 반복(repetition): **5회** (E1 동일)
-- 시드: repetition N → seed = 41 + N (42, 43, 44, 45, 46)
-- Gemini temperature: `0.0` (가능한 한 결정론적)
-- 단, Gemini API는 완전 결정론적 출력을 보장하지 않으므로 5회 반복의 분산이 신뢰 구간 역할
+- 반복(repetition): **10회**
+- Temperature: `0.2` (파이프라인 프로덕션 설정과 동일)
+- Gemini API는 seed 파라미터 미지원 → 10회 반복은 temperature=0.2의 자연 분산을 측정
 
-### 6-2. 집계 방식 (E1 동일)
+| repetition | bootstrap seed (CI 계산용) |
+|---|---|
+| 1 | 42 |
+| 2 | 43 |
+| ... | ... |
+| 10 | 51 |
+
+Bootstrap seed는 `score_exp1.py`의 10,000회 재샘플링에만 사용. LLM 호출에는 무관.
+
+### 7-2. 집계 방식
 
 각 지표에 대해:
-```
+```json
 {
-  "runs": [r1, r2, r3, r4, r5],
+  "runs": [r1, r2, ..., r10],
   "mean": μ,
   "sample_sd": σ,
   "min": min,
   "max": max,
-  "bootstrap_ci_95": [lower, upper]  // seed=42, 10,000 resamples
+  "bootstrap_ci_95": [lower, upper]
 }
 ```
-**Bootstrap CI 주의**: n=5 기준. 탐색적 비교용, 강한 통계 추론에 사용 불가.
+Bootstrap CI: n=10, seed=42, 10,000 resamples. 탐색적 비교용.
 
-### 6-3. Paired 비교
+### 7-3. Paired 비교
 
-각 repetition 동일 번호끼리 차이를 계산:
+동일 repetition 번호끼리 차이를 계산:
+```python
+paired["T-C_minus_T-B"][metric] = [T-C_r1 - T-B_r1, ..., T-C_r10 - T-B_r10]
 ```
-paired["T-C_minus_T-B"][metric] = [T-C_r1 - T-B_r1, ..., T-C_r5 - T-B_r5]
-```
-→ Grounding 단독 효과(T-D - T-C), Few-shot 효과(T-C - T-B), IR 전체 효과(T-D - T-A) 분리 가능
+→ Grounding 효과(T-D−T-C), Few-shot 효과(T-C−T-B), IR 기여(T-B−T-A) 분리 가능
 
 ---
 
-## 7. 파일 구조
+## 8. 파일 구조
 
 ```
-experiments/
-  eval/
-    data/
-      demonstrations.json          # 정적 few-shot 예시 5개 (phantom 엔티티)
-      topology_eval.json            # alias 인벤토리 (평가 및 grounding 공용)
-    config/
-      T-A.toml                     # direct flowrule, no few-shot, no grounding
-      T-B.toml                     # IR, no few-shot, no grounding
-      T-C.toml                     # IR, few-shot, no grounding
-      T-D.toml                     # IR, few-shot, grounding
-    logs/
-      T-A-gemini-flash-<uuid>-r1.jsonl
-      ...
-    reports/
-      summary_exp1.json            # 전체 비교
-      summary_exp1_by_category.json
-      summary_exp2.json
-    run_exp1.py                    # Exp-1 실행 스크립트
-    score_exp1.py                  # Exp-1 채점 스크립트
-    run_exp2.py                    # Exp-2 실행 스크립트
-    score_exp2.py                  # Exp-2 채점 스크립트
+experiments/eval/
+├── data/
+│   ├── intents_eval.jsonl          ✅ Small (60케이스, 9:1, h1–h4, s1–s4)
+│   ├── intents_eval_large.jsonl    ✅ Large (60케이스, 9:1, h1–h16, s1–s8)
+│   ├── topology_eval.json          ✅ Small 토폴로지 alias 인벤토리
+│   ├── topology_large.json         ✅ Large 토폴로지 alias 인벤토리
+│   ├── demonstrations.json         ✅ 정적 few-shot 5개 (phantom 엔티티)
+│   └── DATASET_PLAN.md             ✅ 데이터셋 설계 문서
+├── config/
+│   ├── T-A.toml / T-B.toml / T-C.toml / T-D.toml         ✅ Small 실험
+│   └── T-A-large.toml / T-B-large.toml / T-C-large.toml / T-D-large.toml  ✅ Large 실험
+├── logs/                           — 실행 결과 JSONL (gitignore 권장)
+├── reports/                        — 채점 결과 JSON
+├── run_exp1.py                     🔲 미구현
+├── score_exp1.py                   🔲 미구현
+├── run_exp2.py                     🔲 미구현 (별도 실험)
+└── score_exp2.py                   🔲 미구현 (별도 실험)
 ```
 
 ### 예측 레코드 형식 (JSONL)
 
 ```json
 {
-  "case_id": "F01",
+  "case_id": "FWD-01",
   "treatment": "T-D",
-  "model": "gemini-2.0-flash",
-  "run_id": "T-D-gemini-flash-a3f2b1c0",
+  "model": "gemini-3.1-flash-lite",
+  "run_id": "T-D-gemini-flash-lite-a3f2b1c0",
   "repetition": 1,
-  "seed": 42,
-  "output": { "status": "accepted", "rules": [...] },
+  "output": {"status": "accepted", "action": "forward", ...},
   "raw_content": "...",
   "latency_ms": 1234.5,
   "input_tokens": 850,
@@ -325,57 +322,45 @@ experiments/
 
 ---
 
-## 8. 토폴로지 인벤토리 (`topology_eval.json`)
+## 9. 토폴로지 인벤토리
 
-```json
-{
-  "topology_id": "sdn-xai-pipeline-eval-v1",
-  "entities": [
-    {"id": "host:h1", "aliases": ["h1", "10.0.0.1", "10.0.0.1/32"]},
-    {"id": "host:h2", "aliases": ["h2", "10.0.0.2", "10.0.0.2/32"]},
-    {"id": "host:h3", "aliases": ["h3", "10.0.0.3", "10.0.0.3/32"]},
-    {"id": "host:h4", "aliases": ["h4", "10.0.0.4", "10.0.0.4/32"]},
-    {"id": "device:s1", "aliases": ["s1", "switch 1", "switch1", "of:0000000000000001"]},
-    {"id": "device:s2", "aliases": ["s2", "switch 2", "switch2", "of:0000000000000002"]},
-    {"id": "device:s3", "aliases": ["s3", "switch 3", "switch3", "of:0000000000000003"]},
-    {"id": "device:s4", "aliases": ["s4", "switch 4", "switch4", "of:0000000000000004"]}
-  ],
-  "ports": {
-    "of:0000000000000001": [1, 2, 3, 4, 9],
-    "of:0000000000000002": [1, 2, 3, 4],
-    "of:0000000000000003": [1, 2, 3, 4],
-    "of:0000000000000004": [1, 2, 3, 4]
-  },
-  "capabilities": ["forwarding", "security", "qos", "sfc", "reroute"]
-}
-```
+### Small (`topology_eval.json`)
+
+- 호스트: h1–h4 (10.0.0.1–10.0.0.4)
+- 스위치: s1–s4 (of:000...001–004)
+- s1 포트: 1,2,3,4,9 (포트 9 = IDS 웨이포인트)
+- s2–s4 포트: 1,2,3,4
+- Phantom 엔티티 (거부 케이스용): h5, h6, h7, s9
+
+### Large (`topology_large.json`)
+
+- 호스트: h1–h16 (10.0.0.1–10.0.0.16)
+- 스위치: s1–s8 (of:000...001–008)
+- IDS 웨이포인트: s1:9, s3:9 (2개 — Small보다 복잡한 SFC 테스트)
+- s1, s3 포트: 1–9, 나머지 s2,s4–s8 포트: 1–8
+- Phantom 엔티티: h17, h18, h19, h20, s9, s10
 
 ---
 
-## 9. Few-Shot 데모 (`demonstrations.json`)
+## 10. Few-Shot 데모 (`demonstrations.json`)
 
-E1의 방식을 그대로 계승. **phantom 엔티티**를 사용해 평가 데이터 유출 방지.  
-파이프라인의 IntentIR 스키마(action: block/forward/qos/sfc/reroute)에 맞게 작성.
-
-5개 예시 구성:
+**phantom 엔티티**로만 구성해 평가 데이터 유출 방지. 파이프라인 IntentIR 스키마 사용.
 
 | ID | 카테고리 | 커버 |
 |---|---|---|
-| D-FWD | forwarding | 기본 forward, enforcement.device, egress_port |
+| D-FWD | forwarding | action=forward, enforcement.device, egress_port |
 | D-BLOCK | security | action=block, protocol, dst_port |
 | D-QOS | qos | action=qos, qos.queue |
-| D-SFC | sfc | action=sfc, routing.waypoints, enforcement.egress_port + alt_egress_port |
+| D-SFC | sfc | action=sfc, routing.waypoints, egress_port + alt_egress_port |
 | D-REJECT | rejection | status=rejected, reason=unsupported |
-
-예시는 실험 데이터셋 외부 엔티티(`demo-client`, `lab-red`, `edge-node` 등)만 사용.
 
 ---
 
-## 10. 기대 결과 패턴 (E1 결과 기반 가설)
+## 11. 기대 결과 패턴 (가설)
 
-E1 실험 결과(qwen3:8b 기준)에서 관찰된 패턴을 참고해 Gemini 결과를 예측한다.
+E1(qwen3:8b) 결과를 참고한 Gemini 예측.
 
-| 지표 | T-A (직접) | T-B (IR) | T-C (+Few-Shot) | T-D (+Grounding) |
+| 지표 | T-A (직접) | T-B (IR) | T-C (+FS) | T-D (+G) |
 |---|---|---|---|---|
 | schema_validity | ~0.70 | ~0.85 | ~0.90 | ~0.93 |
 | exact_match | ~0.40 | ~0.65 | ~0.75 | ~0.83 |
@@ -383,82 +368,73 @@ E1 실험 결과(qwen3:8b 기준)에서 관찰된 패턴을 참고해 Gemini 결
 | device_slot_accuracy | ~0.55 | ~0.65 | ~0.72 | ~0.88 |
 | rejection_recall | ~0.30 | ~0.55 | ~0.65 | ~0.78 |
 
-E1에서 검증된 핵심 패턴:
-- **Grounding의 효과 > Few-shot의 효과** (특히 hallucination_rate와 device 슬롯에서)
-- **IR 방식 자체(T-B vs T-A)**: schema_validity 약 15% 향상 (결정론적 파싱의 이점)
-
 ---
 
-## 11. 논문 Table 형식
+## 12. 논문 Table 형식
 
-### Table 1: Exp-1 치료 비교 (mean ± sd, 5회 반복)
-
-```
-Treatment | Schema | ExactMatch | SlotAcc(avg) | HallucinRate | RejRecall
-----------|--------|------------|-------------|--------------|----------
-T-A Direct|  0.xx  |    0.xx    |     0.xx    |    0.xx      |   0.xx
-T-B IR    |  0.xx  |    0.xx    |     0.xx    |    0.xx      |   0.xx
-T-C +FS   |  0.xx  |    0.xx    |     0.xx    |    0.xx      |   0.xx
-T-D +G    |  0.xx  |    0.xx    |     0.xx    |    0.xx      |   0.xx
-```
-
-### Table 2: T-D 슬롯별 정확도
+### Table 1: Exp-1 Treatment 비교 (mean ± sd, n=10)
 
 ```
-Slot          | T-A  | T-B  | T-C  | T-D
---------------|------|------|------|------
-action        | 0.xx | 0.xx | 0.xx | 0.xx
-source_ip     | 0.xx | 0.xx | 0.xx | 0.xx
-destination_ip| 0.xx | 0.xx | 0.xx | 0.xx
-protocol      | 0.xx | 0.xx | 0.xx | 0.xx
-dst_port      | 0.xx | 0.xx | 0.xx | 0.xx
-device        | 0.xx | 0.xx | 0.xx | 0.xx
-egress_port   | 0.xx | 0.xx | 0.xx | 0.xx
+Treatment  | Schema | ExactMatch | SlotAcc(avg) | HallucinRate | RejRecall
+-----------|--------|------------|--------------|--------------|----------
+T-A Direct | 0.xx   |   0.xx     |    0.xx      |    0.xx      |   0.xx
+T-B IR     | 0.xx   |   0.xx     |    0.xx      |    0.xx      |   0.xx
+T-C +FS    | 0.xx   |   0.xx     |    0.xx      |    0.xx      |   0.xx
+T-D +G     | 0.xx   |   0.xx     |    0.xx      |    0.xx      |   0.xx
 ```
 
-### Table 3: Exp-2 파이프라인 전체 (T-D, gemini-2.0-flash)
+### Table 2: T-D 슬롯별 정확도 (전 treatment 비교)
 
 ```
-Metric                    | Rate
---------------------------|------
-compile_success           | 0.xx
-schema_validity (FlowRule)| 0.xx
-static_pass               | 0.xx
-end_to_end_approve        | 0.xx
+Slot           | T-B  | T-C  | T-D
+---------------|------|------|------
+action         | 0.xx | 0.xx | 0.xx
+source_ip      | 0.xx | 0.xx | 0.xx
+destination_ip | 0.xx | 0.xx | 0.xx
+protocol       | 0.xx | 0.xx | 0.xx
+dst_port       | 0.xx | 0.xx | 0.xx
+device         | 0.xx | 0.xx | 0.xx
+egress_port    | 0.xx | 0.xx | 0.xx
+waypoints      | 0.xx | 0.xx | 0.xx
 ```
 
-### Table 4: 모델 크기 비교 (T-D 설정)
+### Table 3: 토폴로지 스케일 비교 (T-D 고정, Small vs Large)
 
 ```
-Model               | ExactMatch | HallucinRate | Latency(ms) | Tokens
---------------------|------------|-------------|-------------|-------
-gemini-2.0-flash-lite|   0.xx   |    0.xx     |    xxx      |  xxx
-gemini-2.0-flash    |   0.xx    |    0.xx     |    xxx      |  xxx
-gemini-2.5-flash    |   0.xx    |    0.xx     |    xxx      |  xxx
+Metric             | Small (60) | Large (60)
+-------------------|------------|------------
+schema_validity    | 0.xx       | 0.xx
+hallucination_rate | 0.xx       | 0.xx
+rejection_recall   | 0.xx       | 0.xx
 ```
 
 ---
 
-## 12. 구현 순서
+## 13. 구현 순서
 
-| 단계 | 작업 | 산출물 |
+| 단계 | 작업 | 상태 |
 |---|---|---|
-| 1 | `topology_eval.json` 작성 | alias 인벤토리 |
-| 2 | `demonstrations.json` 작성 (phantom 엔티티, 파이프라인 스키마) | 5개 데모 |
-| 3 | `score_exp1.py` — 정규화·채점 엔진 | 채점 모듈 |
-| 4 | `run_exp1.py` — Gemini API 배치 실행 | 실행 스크립트 |
-| 5 | T-B, T-C, T-D 5회×3 treatment 실행 (T-A는 별도) | 45개 JSONL |
-| 6 | `score_exp1.py` 실행 → 리포트 생성 | summary_exp1.json |
-| 7 | 데이터셋 보강 (compound/rejection 추가 13개) | intents_v2_ext.jsonl |
-| 8 | `run_exp2.py` + `score_exp2.py` (Exp-2) | summary_exp2.json |
-| 9 | 모델 비교 실험 (T-D × 3모델) | summary_model_cmp.json |
+| 1 | `topology_eval.json` 작성 | ✅ 완료 |
+| 2 | `topology_large.json` 작성 (16h+8s) | ✅ 완료 |
+| 3 | `demonstrations.json` 작성 | ✅ 완료 |
+| 4 | `intents_eval.jsonl` 작성 (Small, 60케이스) | ✅ 완료 |
+| 5 | `intents_eval_large.jsonl` 작성 (Large, 60케이스) | ✅ 완료 |
+| 6 | config 파일 8개 작성 (T-A~D, T-A~D-large) | ✅ 완료 |
+| 7 | **Gold Validation**: 수락 케이스 54개를 파이프라인 Stage 1→2 통과 확인 | 🔲 미완료 |
+| 8 | `run_exp1.py` — Gemini API 배치 실행 (n=10) | 🔲 미구현 |
+| 9 | `score_exp1.py` — 채점 엔진 (order-agnostic 복합 매칭 포함) | 🔲 미구현 |
+| 10 | Small 실험 실행 (T-A~D × 10회) | 🔲 미실행 |
+| 11 | Small 결과 분석 → 보완점 확인 | 🔲 미실행 |
+| 12 | Large 실험 실행 (T-D × 10회) | 🔲 미실행 |
+| 13 | `run_exp2.py` + `score_exp2.py` (Exp-2, 별도) | 🔲 미구현 |
 
 ---
 
-## 13. 주의사항
+## 14. 주의사항
 
-- **Gold 상태**: `intents_v2.jsonl`은 `provisional_gold` (단일 annotator). 논문 게재 전 2인 이상 독립 검증 필요.
-- **T-A 스키마**: ONOS FlowRule JSON 스키마를 별도 정의해야 함 (E1의 `OnosFlowSet`에 해당). 파이프라인 Stage 3의 JSON Schema를 재사용 가능.
-- **SFC/Reroute**: 이 카테고리는 enforcement 필드가 많아 slot_accuracy가 낮게 나올 수 있음. 카테고리별 분리 리포트 필수.
-- **데이터 유출 방지**: demonstrations.json의 엔티티가 intents_v2.jsonl 케이스에 등장하지 않아야 함. phantom 엔티티(`demo-*`, `lab-*`) 전용으로 작성.
-- **Gemini API 결정론적 출력**: temperature=0이어도 완전 결정론적 아님. 5회 반복 분산이 변동성 측정 역할.
+- **Gold 검증 필요**: `intents_eval.jsonl` gold는 단일 작성자. 논문 게재 전 파이프라인 실행 검증 + 2인 독립 리뷰 권장.
+- **T-A 채점 분리**: T-A는 FlowRule JSON 스키마로 채점. IntentIR 슬롯 지표(T-B~D)와 직접 비교 불가. 공통 지표(`schema_validity`, `status_match`, `rejection_recall`)로만 T-A vs T-B 비교.
+- **복합 인텐트 매칭**: 예측 rules 배열과 gold rules 배열이 순서 다를 수 있음 → order-agnostic best-match 알고리즘 적용 필수.
+- **Large 실험 시기**: Small 실험 완료 후 결과 분석 → 보완 방향 결정 후 Large 진행.
+- **Exp-2, Exp-3**: 별도 실험 파일(`run_exp2.py`, `run_exp3.py`)로 분리. 현재 미구현.
+- **Gemini seed 없음**: temperature=0.2에서 n=10 반복은 자연 분산 측정. Bootstrap CI는 탐색적 수준.

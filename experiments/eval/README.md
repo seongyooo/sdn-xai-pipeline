@@ -1,7 +1,8 @@
 # Exp-1 & Exp-2: 정량 평가 프레임워크
 
 > 브랜치: `exp/eval-framework`  
-> 상세 계획: `docs/EVAL_PLAN.md`
+> 상세 계획: `docs/EVAL_PLAN.md`  
+> 모델: `gemini-3.1-flash-lite` / Temperature: `0.2` / Repetitions: `10`
 
 ---
 
@@ -10,19 +11,27 @@
 ```
 experiments/eval/
 ├── data/
-│   ├── topology_eval.json       ✅ 완료 — alias 인벤토리 (grounding + 채점 공용)
-│   └── demonstrations.json      ✅ 완료 — 정적 few-shot 데모 5개 (phantom 엔티티)
+│   ├── intents_eval.jsonl          ✅ Small 데이터셋 (60케이스, 9:1, h1–h4, s1–s4)
+│   ├── intents_eval_large.jsonl    ✅ Large 데이터셋 (60케이스, 9:1, h1–h16, s1–s8)
+│   ├── topology_eval.json          ✅ Small 토폴로지 alias 인벤토리
+│   ├── topology_large.json         ✅ Large 토폴로지 alias 인벤토리
+│   ├── demonstrations.json         ✅ 정적 few-shot 5개 (phantom 엔티티)
+│   └── DATASET_PLAN.md             ✅ 데이터셋 설계 문서
 ├── config/
-│   ├── T-A.toml                 ✅ 완료 — Direct FlowRule (baseline)
-│   ├── T-B.toml                 ✅ 완료 — IR Zero-Shot
-│   ├── T-C.toml                 ✅ 완료 — IR + Few-Shot
-│   └── T-D.toml                 ✅ 완료 — IR + Few-Shot + Grounding
-├── logs/                        — 실행 결과 JSONL (gitignore 권장)
-├── reports/                     — 채점 결과 JSON
-├── run_exp1.py                  🔲 미구현 — Gemini API 배치 실행
-├── score_exp1.py                🔲 미구현 — 채점 엔진
-├── run_exp2.py                  🔲 미구현 — 파이프라인 레벨 평가 실행
-└── score_exp2.py                🔲 미구현 — Exp-2 채점
+│   ├── T-A.toml                    ✅ Direct FlowRule (Small)
+│   ├── T-B.toml                    ✅ IR Zero-Shot (Small)
+│   ├── T-C.toml                    ✅ IR + Few-Shot (Small)
+│   ├── T-D.toml                    ✅ IR + Few-Shot + Grounding (Small)
+│   ├── T-A-large.toml              ✅ Direct FlowRule (Large)
+│   ├── T-B-large.toml              ✅ IR Zero-Shot (Large)
+│   ├── T-C-large.toml              ✅ IR + Few-Shot (Large)
+│   └── T-D-large.toml              ✅ IR + Few-Shot + Grounding (Large)
+├── logs/                           — 실행 결과 JSONL (gitignore 권장)
+├── reports/                        — 채점 결과 JSON
+├── run_exp1.py                     🔲 미구현 — Gemini API 배치 실행
+├── score_exp1.py                   🔲 미구현 — 채점 엔진
+├── run_exp2.py                     🔲 미구현 — Stage 1→2→3 파이프라인 평가
+└── score_exp2.py                   🔲 미구현 — Exp-2 채점
 ```
 
 ---
@@ -37,50 +46,76 @@ experiments/eval/
 | **T-D** | IntentIR | ✅ | ✅ | 현재 파이프라인 설정 (최상) |
 
 비교 포인트:
-- **T-A vs T-B**: IR + 컴파일러의 순수 기여
-- **T-B vs T-C**: Few-shot의 기여
-- **T-C vs T-D**: Grounding의 기여
+- **T-A vs T-B**: IR + 컴파일러의 순수 기여 (논문 핵심 주장 검증)
+- **T-B vs T-C**: Few-shot 효과
+- **T-C vs T-D**: Grounding 효과
 - **T-B vs T-D**: 두 기법 결합 효과
 
 ---
 
-## Exp-1 실행 순서
+## 데이터셋 구조
 
-### 1. run_exp1.py 구현 후 실행
+### 공통 설계 원칙
+- 파이프라인 IntentIR 스키마 직접 사용 (정규화 레이어 없음)
+- accepted : rejected = **9 : 1**
+- 6개 카테고리 균형: forwarding / security / qos / sfc / reroute / compound
+
+### Small 토폴로지 (`intents_eval.jsonl`)
+- **총 60케이스** = 6 카테고리 × (accepted 9 + rejected 1)
+- 토폴로지: 4 hosts (h1–h4), 4 switches (s1–s4), IDS at s1:9
+
+| 카테고리 | rejected 이유 |
+|---|---|
+| forwarding | ambiguous |
+| security | unknown_entity |
+| qos | unsupported |
+| sfc | ambiguous |
+| reroute | contradictory |
+| compound | unknown_entity |
+
+### Large 토폴로지 (`intents_eval_large.jsonl`)
+- **총 60케이스** = 6 카테고리 × (accepted 9 + rejected 1)
+- 토폴로지: 16 hosts (h1–h16), 8 switches (s1–s8), IDS at s1:9 & s3:9
+- Small과 다른 rejected 이유 분포로 상보적 커버리지
+
+| 카테고리 | rejected 이유 |
+|---|---|
+| forwarding | unknown_entity |
+| security | ambiguous |
+| qos | contradictory |
+| sfc | unsupported |
+| reroute | ambiguous |
+| compound | contradictory |
+
+---
+
+## 실험 실행 순서
+
+### 1단계: Gold Validation (run_exp1.py 전에 완료 권장)
+
+수락 케이스 54개 gold JSON을 파이프라인 Stage 1→2에 통과시켜 gold 자체의 정확성 확인.
+
+### 2단계: Exp-1 실행 (Small)
 
 ```bash
-# treatment × repetition 단위 실행
+# T-A ~ T-D × 10회 반복
 python experiments/eval/run_exp1.py \
   --config experiments/eval/config/T-D.toml \
-  --repetition 1 \
+  --repetitions 10 \
   --output experiments/eval/logs/
-
-# 5회 반복 (repetition 1~5), 4 treatment 총 20회 실행
 ```
 
-**내부 동작:**
-1. `data/intents_v2.jsonl` 로드 (100케이스)
-2. config에 따라 시스템 프롬프트 구성:
-   - T-A: `SYSTEM_DIRECT_FLOW`
-   - T-B: `SYSTEM_IR`
-   - T-C: `SYSTEM_IR` + few-shot 데모
-   - T-D: `SYSTEM_IR` + few-shot 데모 + topology grounding
-3. Gemini API 호출 (google-genai SDK)
-4. 출력 파싱 + 스키마 검증
-5. 예측 레코드 JSONL 저장
-
-**출력 파일:** `logs/T-D-gemini-flash-<uuid>-r1.jsonl`
+**출력 파일:** `logs/T-D-gemini-flash-lite-<uuid>-r1.jsonl` ... `r10.jsonl`
 
 **예측 레코드 형식:**
 ```json
 {
-  "case_id": "F01",
+  "case_id": "FWD-01",
   "treatment": "T-D",
-  "model": "gemini-2.0-flash",
-  "run_id": "T-D-gemini-flash-a3f2b1c0",
+  "model": "gemini-3.1-flash-lite",
+  "run_id": "T-D-gemini-flash-lite-a3f2b1c0",
   "repetition": 1,
-  "seed": 42,
-  "output": {"status": "accepted", "rules": [...]},
+  "output": {"status": "accepted", "action": "forward", ...},
   "raw_content": "...",
   "latency_ms": 1234.5,
   "input_tokens": 850,
@@ -92,58 +127,76 @@ python experiments/eval/run_exp1.py \
 
 `error_kind`: `null` | `"transport"` | `"schema_invalid"` | `"timeout"`
 
-### 2. score_exp1.py 실행
+### 3단계: 채점 (Exp-1)
 
 ```bash
 python experiments/eval/score_exp1.py \
-  --dataset data/intents_v2.jsonl \
+  --dataset experiments/eval/data/intents_eval.jsonl \
   --topology experiments/eval/data/topology_eval.json \
   --logs experiments/eval/logs/ \
   --output experiments/eval/reports/summary_exp1.json
 ```
 
----
+### 4단계: Small 결과 분석 → 보완 방향 확인
 
-## Exp-2 실행 순서
-
-T-D 설정(최상)으로 Stage 1→2→3 전체 파이프라인 통과 여부를 측정.
+### 5단계: Exp-1 실행 (Large)
 
 ```bash
-python experiments/eval/run_exp2.py \
-  --config experiments/eval/config/T-D.toml \
-  --repetition 1 \
+python experiments/eval/run_exp1.py \
+  --config experiments/eval/config/T-D-large.toml \
+  --repetitions 10 \
   --output experiments/eval/logs/
 ```
-
-측정 지표: `compile_success` / `schema_validity` / `static_pass` / `end_to_end_approve`
 
 ---
 
 ## 채점 지표 요약 (Exp-1)
 
+### 공통 지표 (T-A ~ T-D)
+
 | 지표 | 설명 |
 |---|---|
 | `schema_validity` | LLM 출력 파싱 성공률 |
-| `normalized_exact_match` | gold IR과 완전 일치율 |
-| `rule_count_accuracy` | 복합 인텐트 rule 수 일치율 |
-| `slot_accuracy[slot]` | action/src_ip/dst_ip/device/port 등 슬롯별 |
-| `hallucinated_entity_rate` | 토폴로지에 없는 엔티티 비율 |
-| `rejection_recall` | 거부 케이스 탐지율 (reason별) |
-| `false_rejection_rate` | 허용 케이스 오거부율 |
+| `status_match` | accepted/rejected 판별 정확도 |
+| `false_rejection_rate` | 수락 케이스 오거부율 |
+| `rejection_recall` | 거부 케이스 탐지율 |
+| `rejection_reason_match` | rejection_reason 일치율 |
 
-Gold action 정규화: `deny→block`, `allow→forward`, `prioritize→qos`
+### IntentIR 슬롯 지표 (T-B ~ T-D만)
+
+| 지표 | 설명 |
+|---|---|
+| `slot_accuracy[action]` | action 필드 정확도 |
+| `slot_accuracy[source_ip]` | 출발지 IP 정확도 |
+| `slot_accuracy[destination_ip]` | 목적지 IP 정확도 |
+| `slot_accuracy[protocol]` | 프로토콜 정확도 |
+| `slot_accuracy[dst_port]` | 목적지 포트 정확도 |
+| `slot_accuracy[device]` | 스위치 정확도 (alias 정규화) |
+| `slot_accuracy[egress_port]` | 출구 포트 정확도 |
+| `slot_accuracy[queue]` | QoS queue 정확도 |
+| `slot_accuracy[waypoints]` | SFC 웨이포인트 정확도 |
+| `hallucinated_entity_rate` | 토폴로지에 없는 엔티티 비율 |
+| `normalized_exact_match` | 모든 슬롯 완전 일치율 |
 
 ---
 
 ## 시드 규칙
 
-| repetition | seed |
+Gemini API는 seed 파라미터 미지원. n=10 반복은 temperature=0.2의 자연 분산 측정.  
+Bootstrap CI 계산(10,000 재샘플링)에만 seed 사용.
+
+| repetition | bootstrap seed |
 |---|---|
 | 1 | 42 |
 | 2 | 43 |
 | 3 | 44 |
 | 4 | 45 |
 | 5 | 46 |
+| 6 | 47 |
+| 7 | 48 |
+| 8 | 49 |
+| 9 | 50 |
+| 10 | 51 |
 
 ---
 
@@ -154,4 +207,4 @@ experiments/eval/logs/
 experiments/eval/reports/
 ```
 
-결과 파일은 용량이 크고 API 비용이 들어간 산출물이므로 별도 관리 권장.
+결과 파일은 API 비용이 들어간 산출물이므로 별도 관리 권장.
