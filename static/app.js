@@ -900,6 +900,7 @@ function clearTopologyGraph() {
   if (!topoSvg || !topoZoomLayer) return;
   if (simulation) { simulation.stop(); simulation = null; }
   topoZoomLayer.select('.links').selectAll('*').remove();
+  topoZoomLayer.select('.bw-labels').selectAll('*').remove();
   topoZoomLayer.select('.nodes').selectAll('*').remove();
   topoSvg.selectAll('#ghost-link').remove();
   topoSvg.selectAll('#lasso-rect').remove();
@@ -1492,6 +1493,7 @@ function initTopology() {
 
   topoZoomLayer = topoSvg.append('g').attr('class', 'zoom-layer');
   topoZoomLayer.append('g').attr('class', 'links');
+  topoZoomLayer.append('g').attr('class', 'bw-labels'); // link bandwidth text layer
   topoZoomLayer.append('g').attr('class', 'nodes');
 
   topoZoom = d3.zoom()
@@ -1545,13 +1547,27 @@ function updateTopology(data) {
     .force('center',    d3.forceCenter(w / 2, h / 2))
     .force('collision', d3.forceCollide(24));
 
-  // Links
+  // Links — 대역폭에 따라 색상·두께 차별화
   const link = topoZoomLayer.select('.links')
     .selectAll('line')
     .data(links, d => `${d.source?.id ?? d.source}-${d.target?.id ?? d.target}`)
     .join('line')
-    .attr('stroke', '#374151')
-    .attr('stroke-width', 1.5);
+    .attr('stroke',       d => bwLinkColor(d.bw))
+    .attr('stroke-width', d => bwLinkStroke(d.bw));
+
+  // Bandwidth labels — 링크 중점에 "NNM" 텍스트 표시
+  const bwLabel = topoZoomLayer.select('.bw-labels')
+    .selectAll('text.live-bw')
+    .data(links.filter(d => d.bw != null),
+          d => `bw-${d.source?.id ?? d.source}-${d.target?.id ?? d.target}`)
+    .join('text')
+    .attr('class', 'live-bw')
+    .attr('text-anchor', 'middle')
+    .attr('font-size', 8)
+    .attr('font-family', 'JetBrains Mono, monospace')
+    .attr('pointer-events', 'none')
+    .attr('fill', d => bwLinkColor(d.bw))
+    .text(d => `${d.bw}M`);
 
   // Nodes
   const drag = d3.drag()
@@ -1612,6 +1628,9 @@ function updateTopology(data) {
       .attr('y1', d => d.source.y)
       .attr('x2', d => d.target.x)
       .attr('y2', d => d.target.y);
+    bwLabel
+      .attr('x', d => (d.source.x + d.target.x) / 2)
+      .attr('y', d => (d.source.y + d.target.y) / 2 - 4);
     nodeG.attr('transform', d => {
       // clamp to svg bounds
       const x = Math.max(20, Math.min(cw - 20, d.x));
@@ -1631,6 +1650,24 @@ function updateTopology(data) {
 function nodeColor(d) {
   if (d.type === 'host') return '#3b82f6';
   return { forward: '#10b981', drop: '#f59e0b', offline: '#ef4444', idle: '#6b7280' }[d.state] || '#6b7280';
+}
+
+// 대역폭 → 링크 색상 (100M=녹색, 40M=파랑, 10M=노랑, ≤1M=회색)
+function bwLinkColor(bw) {
+  if (bw == null) return '#374151';
+  if (bw >= 100) return '#10b981';
+  if (bw >= 40)  return '#3b82f6';
+  if (bw >= 10)  return '#f59e0b';
+  return '#4b5563';
+}
+
+// 대역폭 → 링크 두께
+function bwLinkStroke(bw) {
+  if (bw == null) return 1.5;
+  if (bw >= 100) return 2.5;
+  if (bw >= 40)  return 2;
+  if (bw >= 10)  return 1.5;
+  return 1;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

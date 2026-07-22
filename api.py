@@ -670,7 +670,7 @@ def _custom_topo_as_d3(data: dict) -> dict:
         k = tuple(sorted([src_d3, tgt_d3]))
         if k not in seen:
             seen.add(k)
-            links.append({"source": src_d3, "target": tgt_d3})
+            links.append({"source": src_d3, "target": tgt_d3, "bw": lnk.get("bw")})
 
     return {"nodes": nodes, "links": links, "flow_table": [], "rule_count": 0,
             "_source": "custom"}

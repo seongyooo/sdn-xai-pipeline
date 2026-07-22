@@ -316,6 +316,16 @@ body {
   pointer-events: none;
 }
 .stage-card.border-running { border-color: #3b82f6; }
+
+/* Topology bandwidth labels */
+text.live-bw {
+  user-select: none;
+  font-size: 8px;
+  paint-order: stroke fill;
+  stroke: #0a0e1a;
+  stroke-width: 2.5px;
+  stroke-linejoin: round;
+}
 .stage-card.border-error   { border-color: #ef4444; }
 
 .stage-header {
