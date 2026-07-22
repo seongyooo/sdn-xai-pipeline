@@ -707,23 +707,23 @@ class TwinVerifier:
                 return False, f"스위치 {sw_name}을 찾을 수 없음"
 
             result = sw_node.cmd(f"ovs-ofctl dump-flows {sw_name} -O OpenFlow13")
+            # \r을 제거해 인터페이스 이름("s2-eth2\r") 안에 CR이 섞이는 경우를 방지
+            result_clean = result.replace("\r", "")
 
-            # OVS 출력에 \r이 중간에 삽입되면 splitlines()가 actions 부분을
-            # 별개 라인으로 분리할 수 있으므로, 전체 텍스트에서 정규식으로 탐색한다.
             # OVS는 포트를 숫자(output:2), 16진수(output:0x2),
             # 또는 인터페이스 이름(output:"s2-eth2") 형식으로 표기할 수 있다.
             m = re.search(
                 rf'priority={priority}[^\n]*?output:(?:"([^"]*)"|(0x[0-9a-fA-F]+|\d+))',
-                result,
+                result_clean,
             )
             actual_port = None
             if m:
-                if m.group(1):
-                    # 인터페이스 이름 형식: "s2-eth2" → eth 뒤 숫자 추출
-                    eth_m = re.search(r"eth(\d+)$", m.group(1))
+                if m.group(1) is not None:
+                    # 인터페이스 이름 형식: "s2-eth2" → eth 뒤 숫자 추출 ($ 앵커 제거로 CR/공백 무시)
+                    eth_m = re.search(r"eth(\d+)", m.group(1).strip())
                     actual_port = int(eth_m.group(1)) if eth_m else None
-                elif m.group(2):
-                    port_str = m.group(2)
+                elif m.group(2) is not None:
+                    port_str = m.group(2).strip()
                     actual_port = (
                         int(port_str, 16) if port_str.startswith("0x") else int(port_str)
                     )
@@ -740,12 +740,12 @@ class TwinVerifier:
                     )
 
             # priority 라인 자체가 없으면 미설치
-            if f"priority={priority}" not in result:
+            if f"priority={priority}" not in result_clean:
                 return False, f"{sw_name}: priority={priority} flow 없음 (OVS에 미설치)"
 
             # 라인은 있는데 output 파싱 실패 — drop/noaction 또는 다른 action 형식
-            snippet = result[result.find(f"priority={priority}"):
-                             result.find(f"priority={priority}") + 200].split("\n")[0]
+            idx = result_clean.find(f"priority={priority}")
+            snippet = result_clean[idx: idx + 200].split("\n")[0]
             if "drop" in snippet.lower() or "noaction" in snippet.lower():
                 return False, (
                     f"{sw_name} OVS flow: DROP/NOACTION "
