@@ -263,10 +263,10 @@ def call_gemini(
 
             if attempt < max_attempts - 1:
                 if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-                    wait = [30, 60, 120][min(attempt, 2)]
+                    wait = [5, 15, 30][min(attempt, 2)]
                 else:
                     wait = 2 ** attempt
-                print(f"    [retry {attempt+1}/{max_attempts}] {err_str[:80]} — wait {wait}s")
+                print(f"    [retry {attempt+1}/{max_attempts}] {err_str[:80]} - wait {wait}s")
                 time.sleep(wait)
             else:
                 return None, None, 0, 0, latency_ms, "transport", err_str
@@ -384,8 +384,8 @@ def run(
                 "error":         err_msg,
             })
 
-            # Small delay to stay within rate limits
-            time.sleep(0.3)
+            # Rate limit: 4K RPM -> no delay needed (bottleneck is API response ~1.5s)
+            time.sleep(0.0)
 
         # Write JSONL for this repetition
         with open(out_file, "w", encoding="utf-8") as f:

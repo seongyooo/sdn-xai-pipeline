@@ -28,11 +28,32 @@ experiments/eval/
 │   └── T-D-large.toml              ✅ IR + Few-Shot + Grounding (Large)
 ├── logs/                           — 실행 결과 JSONL (gitignore 권장)
 ├── reports/                        — 채점 결과 JSON
-├── run_exp1.py                     🔲 미구현 — Gemini API 배치 실행
-├── score_exp1.py                   🔲 미구현 — 채점 엔진
+├── run_exp1.py                     ✅ 구현 완료 — Gemini API 배치 실행
+├── score_exp1.py                   ✅ 구현 완료 — 채점 엔진
+├── validate_gold.py                ✅ 구현 완료 — Gold 검증
 ├── run_exp2.py                     🔲 미구현 — Stage 1→2→3 파이프라인 평가
 └── score_exp2.py                   🔲 미구현 — Exp-2 채점
 ```
+
+---
+
+## 진행 현황 (2026-07-22 기준)
+
+### Gold Validation
+- Small (`intents_eval.jsonl`): **54/54 PASS** ✅
+- Large (`intents_eval_large.jsonl`): **54/54 PASS** ✅
+
+### Exp-1 실행 현황 (Small)
+
+| Treatment | 완료 reps | 상태 |
+|---|---|---|
+| **T-D** | 7 / 10 | 🔄 진행 중 (3 reps 남음) |
+| **T-C** | 0 / 10 | 🔲 대기 |
+| **T-B** | 0 / 10 | 🔲 대기 |
+| **T-A** | 0 / 10 | 🔲 대기 |
+
+- 모델: `gemini-3.1-flash-lite`, temperature `0.2`
+- 완료된 로그: `logs/T-D-gemini-31-flash-lite-67f49bee-r01~r07.jsonl`
 
 ---
 
