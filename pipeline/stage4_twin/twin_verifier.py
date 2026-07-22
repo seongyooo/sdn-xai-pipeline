@@ -355,7 +355,7 @@ class TwinVerifier:
                     f"⑥+ OVS egress port 검증: {sw_name} priority={priority} "
                     f"→ output:{expected_port} 확인 중..."
                 )
-                ep_ok, ep_msg = self._egress_port_check(net, sw_name, expected_port, priority)
+                ep_ok, ep_msg = self._egress_port_check(net, sw_name, expected_port, priority, flow=f)
                 checks[check_key] = ep_ok
                 evidence[f"{check_key}_msg"] = ep_msg
                 self._log(f"   {'✓' if ep_ok else '✗'} {ep_msg}")
@@ -685,18 +685,21 @@ class TwinVerifier:
         sw_name: str,
         expected_port: int,
         priority: int,
+        flow: Optional[dict] = None,
     ) -> tuple[bool, str]:
         """
-        OVS flow table에서 지정 priority의 flow가 expected_port로 output하는지 확인한다.
+        OVS flow table에서 FlowRule이 expected_port로 output하는지 확인한다.
 
-        ovs-ofctl dump-flows <sw> -O OpenFlow13 출력을 파싱해
-        actions=output:N 값을 expected_port와 비교한다.
+        1차: priority 기반 탐색 (3회 재시도)
+        2차: flow dict의 IPV4_DST 기반 fallback 탐색
+          (ONOS 파이프라이너가 priority를 변환하는 경우 대응)
 
         Args:
             net:           Mininet 객체
             sw_name:       스위치 이름 (예: "s1")
             expected_port: FlowRule treatment에 명시된 egress 포트 번호
             priority:      FlowRule priority (매칭 기준)
+            flow:          FlowRule dict (fallback 탐색용, 없으면 생략)
 
         Returns:
             (성공 여부, 설명 메시지)
@@ -719,51 +722,85 @@ class TwinVerifier:
                 if _attempt < 2:
                     time.sleep(1)
 
-            # OVS는 포트를 숫자(output:2), 16진수(output:0x2),
-            # 또는 인터페이스 이름(output:"s2-eth2") 형식으로 표기할 수 있다.
-            m = re.search(
-                rf'priority={priority}[^\n]*?output:(?:"([^"]*)"|(0x[0-9a-fA-F]+|\d+))',
+            def _parse_output_port(text: str) -> Optional[int]:
+                """'output:N' 또는 'output:\"sw-ethN\"' 에서 포트 번호 추출"""
+                m = re.search(
+                    r'output:(?:"([^"]*)"|(0x[0-9a-fA-F]+|\d+))',
+                    text,
+                )
+                if not m:
+                    return None
+                if m.group(1) is not None:
+                    eth_m = re.search(r"eth(\d+)", m.group(1).strip())
+                    return int(eth_m.group(1)) if eth_m else None
+                port_str = m.group(2).strip()
+                return int(port_str, 16) if port_str.startswith("0x") else int(port_str)
+
+            # ── 1차: priority 기반 탐색 ─────────────────────
+            m_line = re.search(
+                rf'priority={priority}[^\n]*',
                 result_clean,
             )
-            actual_port = None
-            if m:
-                if m.group(1) is not None:
-                    # 인터페이스 이름 형식: "s2-eth2" → eth 뒤 숫자 추출 ($ 앵커 제거로 CR/공백 무시)
-                    eth_m = re.search(r"eth(\d+)", m.group(1).strip())
-                    actual_port = int(eth_m.group(1)) if eth_m else None
-                elif m.group(2) is not None:
-                    port_str = m.group(2).strip()
-                    actual_port = (
-                        int(port_str, 16) if port_str.startswith("0x") else int(port_str)
-                    )
-            if actual_port is not None:
-                if actual_port == expected_port:
-                    return True, (
-                        f"{sw_name} OVS flow: output:{actual_port} "
-                        f"(예상 포트 {expected_port} 일치)"
-                    )
-                else:
+            if m_line:
+                actual_port = _parse_output_port(m_line.group(0))
+                if actual_port is not None:
+                    if actual_port == expected_port:
+                        return True, (
+                            f"{sw_name} OVS flow: output:{actual_port} "
+                            f"(예상 포트 {expected_port} 일치)"
+                        )
                     return False, (
                         f"{sw_name} OVS flow: output:{actual_port} "
                         f"(예상: output:{expected_port} — 포트 불일치)"
                     )
+                snippet = m_line.group(0)[:120]
+                if "drop" in snippet.lower() or "noaction" in snippet.lower():
+                    return False, (
+                        f"{sw_name} OVS flow: DROP/NOACTION "
+                        f"(예상: output:{expected_port})"
+                    )
 
-            # priority 라인 자체가 없으면 미설치
-            if f"priority={priority}" not in result_clean:
-                return False, f"{sw_name}: priority={priority} flow 없음 (OVS에 미설치)"
+            # ── 2차: IPV4_DST 기반 fallback 탐색 ───────────
+            # ONOS 파이프라이너가 priority를 내부적으로 변환하는 경우 대응
+            if flow is not None:
+                criteria = {
+                    c["type"]: c
+                    for c in flow.get("selector", {}).get("criteria", [])
+                }
+                dst_ip_c = criteria.get("IPV4_DST", {}).get("ip", "")
+                in_port_c = criteria.get("IN_PORT", {}).get("port", "")
 
-            # 라인은 있는데 output 파싱 실패 — drop/noaction 또는 다른 action 형식
-            idx = result_clean.find(f"priority={priority}")
-            snippet = result_clean[idx: idx + 200].split("\n")[0]
-            if "drop" in snippet.lower() or "noaction" in snippet.lower():
-                return False, (
-                    f"{sw_name} OVS flow: DROP/NOACTION "
-                    f"(예상: output:{expected_port})"
-                )
+                search_anchor = None
+                if dst_ip_c:
+                    dst_ip_host = dst_ip_c.split("/")[0]
+                    search_anchor = re.escape(dst_ip_host)
+                    field_str = f"nw_dst={dst_ip_host}"
+                elif in_port_c:
+                    search_anchor = re.escape(str(in_port_c))
+                    field_str = f"in_port={in_port_c}"
 
+                if search_anchor:
+                    for line in result_clean.splitlines():
+                        if search_anchor not in line:
+                            continue
+                        actual_port = _parse_output_port(line)
+                        if actual_port is None:
+                            continue
+                        if actual_port == expected_port:
+                            return True, (
+                                f"{sw_name} OVS flow: output:{actual_port} "
+                                f"({field_str} 기준 — priority 변환 감지됨)"
+                            )
+                        # 같은 dst IP인데 다른 포트 → 불일치
+                        return False, (
+                            f"{sw_name} OVS flow: output:{actual_port} "
+                            f"(예상: output:{expected_port} — 포트 불일치, "
+                            f"{field_str} 기준)"
+                        )
+
+            # ── 탐색 실패 ────────────────────────────────────
             return False, (
-                f"{sw_name} OVS flow에서 output 포트를 파싱할 수 없음: "
-                f"{snippet[:120]}"
+                f"{sw_name}: priority={priority} flow 없음 (OVS에 미설치 또는 priority 변환)"
             )
 
         except Exception as exc:
