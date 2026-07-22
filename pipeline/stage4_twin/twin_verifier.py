@@ -710,16 +710,24 @@ class TwinVerifier:
 
             # OVS 출력에 \r이 중간에 삽입되면 splitlines()가 actions 부분을
             # 별개 라인으로 분리할 수 있으므로, 전체 텍스트에서 정규식으로 탐색한다.
-            # [^\n]*? → \r 포함 임의 문자열 (개행 제외)로 priority~output를 한 번에 매치
+            # OVS는 포트를 숫자(output:2), 16진수(output:0x2),
+            # 또는 인터페이스 이름(output:"s2-eth2") 형식으로 표기할 수 있다.
             m = re.search(
-                rf"priority={priority}[^\n]*?output:(0x[0-9a-fA-F]+|\d+)",
+                rf'priority={priority}[^\n]*?output:(?:"([^"]*)"|(0x[0-9a-fA-F]+|\d+))',
                 result,
             )
+            actual_port = None
             if m:
-                port_str = m.group(1)
-                actual_port = (
-                    int(port_str, 16) if port_str.startswith("0x") else int(port_str)
-                )
+                if m.group(1):
+                    # 인터페이스 이름 형식: "s2-eth2" → eth 뒤 숫자 추출
+                    eth_m = re.search(r"eth(\d+)$", m.group(1))
+                    actual_port = int(eth_m.group(1)) if eth_m else None
+                elif m.group(2):
+                    port_str = m.group(2)
+                    actual_port = (
+                        int(port_str, 16) if port_str.startswith("0x") else int(port_str)
+                    )
+            if actual_port is not None:
                 if actual_port == expected_port:
                     return True, (
                         f"{sw_name} OVS flow: output:{actual_port} "
