@@ -339,6 +339,31 @@ class TwinVerifier:
                     timeout=15.0,
                 )
 
+            # ── 5b. OVS egress port 검증 ──────────────────
+            # forward action인 flow에 한해, OVS가 실제로 올바른 포트로 output하는지 확인
+            for f_idx, f in enumerate(flows):
+                instructions = f.get("treatment", {}).get("instructions", [])
+                output_ports = [
+                    i.get("port") for i in instructions if i.get("type") == "OUTPUT"
+                ]
+                if not output_ports:
+                    continue  # block/drop rule은 스킵
+                expected_port = int(output_ports[0])
+                device_id = f.get("deviceId", "")
+                sw_name = _device_id_to_sw_name(device_id, custom_data)
+                priority = f.get("priority", 50000)
+                if sw_name is None:
+                    continue
+                check_key = "egress_port" if len(flows) == 1 else f"egress_port_{f_idx}"
+                self._log(
+                    f"⑥+ OVS egress port 검증: {sw_name} priority={priority} "
+                    f"→ output:{expected_port} 확인 중..."
+                )
+                ep_ok, ep_msg = self._egress_port_check(net, sw_name, expected_port, priority)
+                checks[check_key] = ep_ok
+                evidence[f"{check_key}_msg"] = ep_msg
+                self._log(f"   {'✓' if ep_ok else '✗'} {ep_msg}")
+
             # ── 6. intent 동작 확인 (모든 sub-rule 순회) ──────────────
             for spec_idx, (spec_action, spec_src_ip, spec_dst_ip,
                            spec_proto, spec_port, spec_flow) in enumerate(intent_specs):
@@ -622,6 +647,75 @@ class TwinVerifier:
 
         except Exception as exc:
             return False, f"포트 테스트 오류: {exc}"
+
+    def _egress_port_check(
+        self,
+        net,
+        sw_name: str,
+        expected_port: int,
+        priority: int,
+    ) -> tuple[bool, str]:
+        """
+        OVS flow table에서 지정 priority의 flow가 expected_port로 output하는지 확인한다.
+
+        ovs-ofctl dump-flows <sw> -O OpenFlow13 출력을 파싱해
+        actions=output:N 값을 expected_port와 비교한다.
+
+        Args:
+            net:           Mininet 객체
+            sw_name:       스위치 이름 (예: "s1")
+            expected_port: FlowRule treatment에 명시된 egress 포트 번호
+            priority:      FlowRule priority (매칭 기준)
+
+        Returns:
+            (성공 여부, 설명 메시지)
+        """
+        try:
+            sw_node = net.get(sw_name)
+            if sw_node is None:
+                return False, f"스위치 {sw_name}을 찾을 수 없음"
+
+            result = sw_node.cmd(f"ovs-ofctl dump-flows {sw_name} -O OpenFlow13")
+
+            # priority=N 인 flow 라인 탐색
+            matched_line = None
+            for line in result.splitlines():
+                if f"priority={priority}" in line:
+                    matched_line = line
+                    break
+
+            if matched_line is None:
+                return False, f"{sw_name}: priority={priority} flow 없음 (OVS에 미설치)"
+
+            # actions 섹션에서 output:N 파싱
+            m = re.search(r"output:(\d+)", matched_line)
+            if m:
+                actual_port = int(m.group(1))
+                if actual_port == expected_port:
+                    return True, (
+                        f"{sw_name} OVS flow: output:{actual_port} "
+                        f"(예상 포트 {expected_port} 일치)"
+                    )
+                else:
+                    return False, (
+                        f"{sw_name} OVS flow: output:{actual_port} "
+                        f"(예상: output:{expected_port} — 포트 불일치)"
+                    )
+
+            # drop 또는 NOACTION
+            if "drop" in matched_line.lower() or "noaction" in matched_line.lower():
+                return False, (
+                    f"{sw_name} OVS flow: DROP/NOACTION "
+                    f"(예상: output:{expected_port})"
+                )
+
+            return False, (
+                f"{sw_name} OVS flow에서 output 포트를 파싱할 수 없음: "
+                f"{matched_line[:120]}"
+            )
+
+        except Exception as exc:
+            return False, f"OVS egress port 확인 오류: {exc}"
 
     def _load_custom_topology(self) -> Optional[dict]:
         """
