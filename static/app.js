@@ -377,10 +377,7 @@ async function runPipeline() {
   state.stages.forEach(s => {
     s.status = 'idle'; s.elapsed = null; s.result = null; s.expanded = false; s.progress_log = [];
   });
-  [3, 4].forEach(n => {
-    const el = document.getElementById(`conf-${n}`);
-    if (el) el.style.display = 'none';
-  });
+  buildStageCards();   // 이전 실행 카드 DOM 전체 초기화
   renderDecision();
   setRunBtn(true);
 
