@@ -146,18 +146,21 @@ class IntentParser:
         self.k = k
         self.topology = topology
 
-    def parse(self, intent: str) -> IntentPrediction:
+    def parse(self, intent: str, repair_feedback: str | None = None) -> IntentPrediction:
         """
         자연어 인텐트를 파싱하여 IntentPrediction으로 반환한다.
 
         단일 룰 인텐트 → IntentPrediction(program=IntentIR)
         복합 룰 인텐트 → IntentPrediction(compound=CompoundIntentIR)
 
+        repair_feedback: 이전 검증 실패 피드백 (Repair Loop에서 재시도 시 사용)
+
         Raises:
             ValueError: LLM 응답 없음 또는 JSON 파싱 실패
         """
         system = self._build_system_prompt(intent)
-        raw = self.client.call(system, intent)
+        user_msg = intent if not repair_feedback else f"{intent}\n\n{repair_feedback}"
+        raw = self.client.call(system, user_msg)
 
         if raw is None:
             raise ValueError(

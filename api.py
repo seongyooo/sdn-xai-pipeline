@@ -57,6 +57,27 @@ def _sse(data: dict) -> str:
     return f"data: {json.dumps(data, ensure_ascii=False, default=str)}\n\n"
 
 
+# ── Repair Loop helper ────────────────────────────────────────────────────────
+
+MAX_REPAIR_ATTEMPTS = 3
+
+
+def _build_repair_feedback(static_result, attempt: int, max_attempts: int) -> str:
+    lines = [
+        f"[Repair attempt {attempt}/{max_attempts} — previous output was rejected by static validation]"
+    ]
+    if static_result.schema_errors:
+        lines.append("Schema errors:")
+        for e in static_result.schema_errors:
+            lines.append(f"  - {e}")
+    if static_result.conflicts:
+        lines.append("Conflicts:")
+        for c in static_result.conflicts:
+            lines.append(f"  - [{c.get('conflict_type', '?')}] {c.get('reason', '')}")
+    lines.append("Please revise the intent representation to fix these issues.")
+    return "\n".join(lines)
+
+
 # ── Pipeline runner (synchronous, called in thread) ───────────────────────────
 
 def _run_pipeline(req: RunRequest, q: std_queue.Queue) -> None:
@@ -135,18 +156,44 @@ def _run_pipeline(req: RunRequest, q: std_queue.Queue) -> None:
             if custom_topo
             else NetworkTopology.diamond()
         )
-
-        progress(1, "인텐트 파싱 중... (LLM 호출)")
-        prediction = IntentParser(
+        parser_obj = IntentParser(
             client=client,
             rag_index=rag_index,
             rag_texts=rag_texts,
             rag_outputs=rag_outputs,
             k=req.rag_k,
             topology=topology,
-        ).parse(req.intent)
+        )
+    except Exception as exc:
+        error(1, str(exc))
+        finish("REJECT")
+        return
 
-        # 토폴로지 그라운딩 거부 처리
+    # ── Repair Loop: Stage 1 → 2 → 3 (최대 MAX_REPAIR_ATTEMPTS 재시도) ─────────
+    from stage2_flowrule.compiler import compile_flowrule, compile_compound
+    from stage3_static.static_validator import validate as static_validate
+
+    repair_feedback: str | None = None
+    flowrule = ir = compound = static_result = None
+
+    for repair_iter in range(MAX_REPAIR_ATTEMPTS + 1):
+        is_retry = repair_iter > 0
+
+        # Stage 1 ──────────────────────────────────────────────────────────────
+        if is_retry:
+            progress(1, f"[Repair {repair_iter}/{MAX_REPAIR_ATTEMPTS}] LLM 재호출 중...")
+            emit({"type": "stage", "stage": 1, "status": "running",
+                  "name": f"Intent Parsing (Repair {repair_iter})"})
+        else:
+            progress(1, "인텐트 파싱 중... (LLM 호출)")
+
+        try:
+            prediction = parser_obj.parse(req.intent, repair_feedback=repair_feedback)
+        except Exception as exc:
+            error(1, str(exc))
+            finish("REJECT")
+            return
+
         if prediction.status == "rejected":
             reason = prediction.rejection_reason or "unknown"
             detail = prediction.rejection_detail or ""
@@ -171,76 +218,93 @@ def _run_pipeline(req: RunRequest, q: std_queue.Queue) -> None:
                         + (f", dst={ir.dst_ip}" if ir.dst_ip else ""))
             result["stage1"] = ir.to_dict()
             compound = None
-        done(1, result["stage1"], t)
-    except Exception as exc:
-        error(1, str(exc))
-        finish("REJECT")
-        return
 
-    # ── Stage 2: FlowRule Compile ─────────────────────────────────────────────
-    t = start(2, "FlowRule Compile")
-    try:
-        from stage2_flowrule.compiler import compile_flowrule, compile_compound
+        if not is_retry:
+            done(1, result["stage1"], t)
 
-        if compound:
-            progress(2, f"복합 인텐트 컴파일 중... ({len(compound.rules)}개 sub-rule)")
-            flowrule = compile_compound(compound)
-            flows = flowrule.get("flows", [])
-            progress(2, f"컴파일 완료 → 총 {len(flows)}개 FlowRule 생성")
-        else:
-            progress(2, f"device_hint 변환 중... ({ir.device_hint!r} → ONOS device ID)")
-            progress(2, f"OpenFlow criteria 생성 중... (action={ir.action})")
-            flowrule = compile_flowrule(ir)
-            flows = flowrule.get("flows", [])
-            f0 = flows[0] if flows else {}
-            criteria_n = len(f0.get("selector", {}).get("criteria", []))
-            priority = f0.get("priority", "?")
-            device_id = f0.get("deviceId", "?")
-            progress(2, f"컴파일 완료 → deviceId={device_id}, priority={priority}, criteria={criteria_n}개")
-        result["stage2"] = flowrule
-        done(2, flowrule, t)
-    except Exception as exc:
-        error(2, str(exc))
-        finish("REJECT")
-        return
+        # Stage 2 ──────────────────────────────────────────────────────────────
+        t2 = start(2, "FlowRule Compile") if not is_retry else time.time()
+        if is_retry:
+            emit({"type": "stage", "stage": 2, "status": "running", "name": "FlowRule Compile"})
 
-    # ── Stage 3: Static Validation ────────────────────────────────────────────
-    t = start(3, "Static Validation")
-    try:
-        from stage3_static.static_validator import validate as static_validate
-
-        progress(3, "ONOS 기존 플로우 조회 중...")
-        existing = None
         try:
-            from stage4_twin.onos_client import OnosClient
-            existing = OnosClient().flows()
-            progress(3, f"기존 플로우 {len(existing) if existing else 0}개 수신")
-        except Exception:
-            progress(3, "ONOS 연결 실패 — 충돌 탐지 없이 스키마만 검증")
+            if compound:
+                progress(2, f"복합 인텐트 컴파일 중... ({len(compound.rules)}개 sub-rule)")
+                flowrule = compile_compound(compound)
+                flows = flowrule.get("flows", [])
+                progress(2, f"컴파일 완료 → 총 {len(flows)}개 FlowRule 생성")
+            else:
+                progress(2, f"device_hint 변환 중... ({ir.device_hint!r} → ONOS device ID)")
+                progress(2, f"OpenFlow criteria 생성 중... (action={ir.action})")
+                flowrule = compile_flowrule(ir)
+                flows = flowrule.get("flows", [])
+                f0 = flows[0] if flows else {}
+                criteria_n = len(f0.get("selector", {}).get("criteria", []))
+                priority = f0.get("priority", "?")
+                device_id = f0.get("deviceId", "?")
+                progress(2, f"컴파일 완료 → deviceId={device_id}, priority={priority}, criteria={criteria_n}개")
+            result["stage2"] = flowrule
+            done(2, flowrule, t2)
+        except Exception as exc:
+            error(2, str(exc))
+            finish("REJECT")
+            return
 
-        progress(3, "스키마 검증 중... (ONOS FlowRule 형식 확인)")
-        progress(3, "충돌 탐지 중... (Shadowing / Correlation / Imbrication)")
-        static_result = static_validate(flowrule, existing_flows=existing)
-        r3 = {
-            "passed": static_result.passed,
-            "schema_errors": static_result.schema_errors,
-            "conflicts": static_result.conflicts,
-            "warnings": static_result.warnings,
-            "summary": static_result.summary(),
-        }
-        if static_result.warnings:
-            for w in static_result.warnings:
-                progress(3, f"⚠ 경고: {w[:100]}")
-        if static_result.conflicts:
-            for c in static_result.conflicts:
-                progress(3, f"✗ 충돌: [{c.get('conflict_type')}] {c.get('reason','')[:80]}")
-        progress(3, f"검증 결과: {'PASS' if static_result.passed else 'FAIL'}")
-        result["stage3"] = r3
-        done(3, r3, t)
-    except Exception as exc:
-        error(3, str(exc))
-        finish("REJECT")
-        return
+        # Stage 3 ──────────────────────────────────────────────────────────────
+        t3 = start(3, "Static Validation") if not is_retry else time.time()
+        if is_retry:
+            emit({"type": "stage", "stage": 3, "status": "running", "name": "Static Validation"})
+
+        try:
+            if repair_iter == 0:
+                # ONOS 기존 플로우 조회는 첫 번째 시도에서만
+                progress(3, "ONOS 기존 플로우 조회 중...")
+                existing = None
+                try:
+                    from stage4_twin.onos_client import OnosClient
+                    existing = OnosClient().flows()
+                    progress(3, f"기존 플로우 {len(existing) if existing else 0}개 수신")
+                except Exception:
+                    existing = None
+                    progress(3, "ONOS 연결 실패 — 충돌 탐지 없이 스키마만 검증")
+
+            progress(3, "스키마 검증 중... (ONOS FlowRule 형식 확인)")
+            progress(3, "충돌 탐지 중... (Shadowing / Correlation / Imbrication)")
+            static_result = static_validate(flowrule, existing_flows=existing)
+            r3 = {
+                "passed": static_result.passed,
+                "schema_errors": static_result.schema_errors,
+                "conflicts": static_result.conflicts,
+                "warnings": static_result.warnings,
+                "summary": static_result.summary(),
+                "repair_attempts": repair_iter,
+            }
+            if static_result.warnings:
+                for w in static_result.warnings:
+                    progress(3, f"⚠ 경고: {w[:100]}")
+            if static_result.conflicts:
+                for c in static_result.conflicts:
+                    progress(3, f"✗ 충돌: [{c.get('conflict_type')}] {c.get('reason','')[:80]}")
+            progress(3, f"검증 결과: {'PASS' if static_result.passed else 'FAIL'}")
+            result["stage3"] = r3
+            done(3, r3, t3)
+        except Exception as exc:
+            error(3, str(exc))
+            finish("REJECT")
+            return
+
+        if static_result.passed:
+            break
+
+        # 최대 재시도 초과
+        if repair_iter >= MAX_REPAIR_ATTEMPTS:
+            progress(3, f"[Repair] {MAX_REPAIR_ATTEMPTS}회 재시도 후에도 검증 실패 — REJECT")
+            error(3, f"정적 검증 실패 (repair {MAX_REPAIR_ATTEMPTS}회 소진): {static_result.summary()}")
+            finish("REJECT")
+            return
+
+        repair_feedback = _build_repair_feedback(static_result, repair_iter + 1, MAX_REPAIR_ATTEMPTS)
+        progress(3, f"[Repair {repair_iter + 1}/{MAX_REPAIR_ATTEMPTS}] 피드백 생성 완료 — LLM 재시도")
 
     # ── Stage 4: Digital Twin ─────────────────────────────────────────────────
     t = start(4, "Digital Twin")

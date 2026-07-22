@@ -50,6 +50,25 @@ def _print_footer(decision: str, log_path: Path) -> None:
     print("=" * 60)
 
 
+MAX_REPAIR_ATTEMPTS = 3
+
+
+def _build_repair_feedback(static_result, attempt: int, max_attempts: int) -> str:
+    lines = [
+        f"[Repair attempt {attempt}/{max_attempts} — previous output was rejected by static validation]"
+    ]
+    if static_result.schema_errors:
+        lines.append("Schema errors:")
+        for e in static_result.schema_errors:
+            lines.append(f"  - {e}")
+    if static_result.conflicts:
+        lines.append("Conflicts:")
+        for c in static_result.conflicts:
+            lines.append(f"  - [{c.get('conflict_type', '?')}] {c.get('reason', '')}")
+    lines.append("Please revise the intent representation to fix these issues.")
+    return "\n".join(lines)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="End-to-End XAI SDN Pipeline",
@@ -126,8 +145,6 @@ def main() -> int:
             k=rag_k,
             topology=topology,
         )
-        prediction = parser_obj.parse(intent)
-
     except Exception as exc:
         print(f"  오류: {exc}")
         pipeline_result["stage1"] = {"error": str(exc)}
@@ -135,111 +152,153 @@ def main() -> int:
         print(f"\n파이프라인 오류로 중단. 결과: logs/{run_id}.json")
         return 1
 
-    # ── 인텐트 거부 처리 ─────────────────────────────────────────
-    if prediction.status == "rejected":
-        reason = prediction.rejection_reason or "unknown"
-        detail = prediction.rejection_detail or ""
-        print(f"  거부: [{reason}] {detail}")
-        pipeline_result["stage1"] = {
-            "status": "rejected",
-            "rejection_reason": reason,
-            "rejection_detail": detail,
-        }
-        pipeline_result["decision"] = "REJECT"
-        log_path = _save_log(run_id, pipeline_result)
-        _print_footer("REJECT", log_path)
-        return 2
+    # ── Repair Loop: Stage 1 → 2 → 3 ─────────────────────────
+    from stage2_flowrule.compiler import compile_flowrule
+    from stage3_static.static_validator import validate as static_validate
 
-    ir = prediction.program
+    repair_feedback: str | None = None
+    flowrule = ir = compound = static_result = None
+    existing_flows: list | None = None
 
-    stage1_content = (
-        f"action={ir.action} | src={ir.src_ip or '-'} | dst={ir.dst_ip or '-'} "
-        f"| device={ir.device_hint}"
-    )
-    if ir.ip_proto:
-        stage1_content += f" | proto={ir.ip_proto}"
-    if ir.dst_port:
-        stage1_content += f" | dport={ir.dst_port}"
-    print(f"  {stage1_content}")
-    pipeline_result["stage1"] = ir.to_dict()
-
-    # ── Stage 2: FlowRule 컴파일 ───────────────────────────────
-    _print_stage(2, "FlowRule 컴파일")
-
+    # ONOS 기존 플로우 조회 (첫 번째 시도에서만)
     try:
-        from stage2_flowrule.compiler import compile_flowrule, CompileError
-        flowrule = compile_flowrule(ir)
+        from stage4_twin.onos_client import OnosClient
+        existing_flows = OnosClient().flows()
+    except Exception as _onos_exc:
+        if args.verbose:
+            print(f"  ONOS 기존 플로우 조회 실패 (충돌 탐지 스킵): {_onos_exc}")
 
-    except Exception as exc:
-        print(f"  오류: {exc}")
-        pipeline_result["stage2"] = {"error": str(exc)}
-        _save_log(run_id, pipeline_result)
-        print(f"\n파이프라인 오류로 중단. 결과: logs/{run_id}.json")
-        return 1
+    for repair_iter in range(MAX_REPAIR_ATTEMPTS + 1):
+        is_retry = repair_iter > 0
+        if is_retry:
+            _print_stage(1, f"인텐트 해석 (Repair {repair_iter}/{MAX_REPAIR_ATTEMPTS})")
 
-    flows = flowrule.get("flows", [])
-    flow = flows[0] if flows else {}
-    criteria_count = len(flow.get("selector", {}).get("criteria", []))
-    stage2_content = (
-        f"deviceId={flow.get('deviceId', '?')} | "
-        f"priority={flow.get('priority', '?')} | "
-        f"criteria={criteria_count}개"
-    )
-    if flow.get("treatment"):
-        instructions = flow["treatment"].get("instructions", [])
-        has_output = any(i.get("type") == "OUTPUT" for i in instructions)
-        if has_output:
-            stage2_content += f" | instructions={len(instructions)}개"
+        # Stage 1
+        try:
+            prediction = parser_obj.parse(intent, repair_feedback=repair_feedback)
+        except Exception as exc:
+            print(f"  오류: {exc}")
+            pipeline_result["stage1"] = {"error": str(exc)}
+            _save_log(run_id, pipeline_result)
+            return 1
+
+        if prediction.status == "rejected":
+            reason = prediction.rejection_reason or "unknown"
+            detail = prediction.rejection_detail or ""
+            print(f"  거부: [{reason}] {detail}")
+            pipeline_result["stage1"] = {
+                "status": "rejected",
+                "rejection_reason": reason,
+                "rejection_detail": detail,
+            }
+            pipeline_result["decision"] = "REJECT"
+            log_path = _save_log(run_id, pipeline_result)
+            _print_footer("REJECT", log_path)
+            return 2
+
+        if prediction.compound:
+            compound = prediction.compound
+            ir = None
+            n = len(compound.rules)
+            print(f"  복합 인텐트 → {n}개 룰: "
+                  + ", ".join(f"rule[{i}]={r.action}" for i, r in enumerate(compound.rules)))
+            pipeline_result["stage1"] = compound.to_dict()
+        else:
+            ir = prediction.program
+            compound = None
+            stage1_content = (
+                f"action={ir.action} | src={ir.src_ip or '-'} | dst={ir.dst_ip or '-'} "
+                f"| device={ir.device_hint}"
+            )
+            if ir.ip_proto:
+                stage1_content += f" | proto={ir.ip_proto}"
+            if ir.dst_port:
+                stage1_content += f" | dport={ir.dst_port}"
+            print(f"  {stage1_content}")
+            pipeline_result["stage1"] = ir.to_dict()
+
+        # Stage 2
+        if is_retry:
+            _print_stage(2, "FlowRule 컴파일")
+        else:
+            _print_stage(2, "FlowRule 컴파일")
+
+        try:
+            if compound:
+                from stage2_flowrule.compiler import compile_compound
+                flowrule = compile_compound(compound)
+            else:
+                flowrule = compile_flowrule(ir)
+        except Exception as exc:
+            print(f"  오류: {exc}")
+            pipeline_result["stage2"] = {"error": str(exc)}
+            _save_log(run_id, pipeline_result)
+            return 1
+
+        flows = flowrule.get("flows", [])
+        flow = flows[0] if flows else {}
+        criteria_count = len(flow.get("selector", {}).get("criteria", []))
+        stage2_content = (
+            f"deviceId={flow.get('deviceId', '?')} | "
+            f"priority={flow.get('priority', '?')} | "
+            f"criteria={criteria_count}개"
+        )
+        if flow.get("treatment"):
+            instructions = flow["treatment"].get("instructions", [])
+            has_output = any(i.get("type") == "OUTPUT" for i in instructions)
+            if has_output:
+                stage2_content += f" | instructions={len(instructions)}개"
+            else:
+                stage2_content += " | action=DROP(차단)"
         else:
             stage2_content += " | action=DROP(차단)"
-    else:
-        stage2_content += " | action=DROP(차단)"
-    print(f"  {stage2_content}")
+        print(f"  {stage2_content}")
 
-    if args.verbose:
-        print(f"  FlowRule JSON:\n  {json.dumps(flowrule, indent=2, ensure_ascii=False)}")
+        if args.verbose:
+            print(f"  FlowRule JSON:\n  {json.dumps(flowrule, indent=2, ensure_ascii=False)}")
+        pipeline_result["stage2"] = flowrule
 
-    pipeline_result["stage2"] = flowrule
+        # Stage 3
+        _print_stage(3, "정적 검증" + (f" (Repair {repair_iter})" if is_retry else ""))
 
-    # ── Stage 3: 정적 검증 ────────────────────────────────────
-    _print_stage(3, "정적 검증")
-
-    try:
-        from stage3_static.static_validator import validate as static_validate
-
-        # ONOS에서 기존 FlowRule 가져와 충돌 탐지에 활용 (연결 실패 시 스킵)
-        existing_flows: list | None = None
         try:
-            from stage4_twin.onos_client import OnosClient
-            existing_flows = OnosClient().flows()
-        except Exception as _onos_exc:
-            if args.verbose:
-                print(f"  ONOS 기존 플로우 조회 실패 (충돌 탐지 스킵): {_onos_exc}")
+            static_result = static_validate(flowrule, existing_flows=existing_flows)
+        except Exception as exc:
+            print(f"  오류: {exc}")
+            pipeline_result["stage3"] = {"error": str(exc)}
+            _save_log(run_id, pipeline_result)
+            return 1
 
-        static_result = static_validate(flowrule, existing_flows=existing_flows)
+        stage3_summary = static_result.summary()
+        print(f"  {stage3_summary}")
+        if args.verbose and static_result.schema_errors:
+            for err in static_result.schema_errors:
+                print(f"    스키마 오류: {err}")
+        if args.verbose and static_result.conflicts:
+            for c in static_result.conflicts:
+                print(f"    충돌: [{c.get('conflict_type')}] {c.get('reason', '')}")
 
-    except Exception as exc:
-        print(f"  오류: {exc}")
-        pipeline_result["stage3"] = {"error": str(exc)}
-        _save_log(run_id, pipeline_result)
-        return 1
+        pipeline_result["stage3"] = {
+            "passed": static_result.passed,
+            "schema_errors": static_result.schema_errors,
+            "conflicts": static_result.conflicts,
+            "warnings": static_result.warnings,
+            "summary": stage3_summary,
+            "repair_attempts": repair_iter,
+        }
 
-    stage3_summary = static_result.summary()
-    print(f"  {stage3_summary}")
-    if args.verbose and static_result.schema_errors:
-        for err in static_result.schema_errors:
-            print(f"    스키마 오류: {err}")
-    if args.verbose and static_result.conflicts:
-        for c in static_result.conflicts:
-            print(f"    충돌: [{c.get('conflict_type')}] {c.get('reason', '')}")
+        if static_result.passed:
+            break
 
-    pipeline_result["stage3"] = {
-        "passed": static_result.passed,
-        "schema_errors": static_result.schema_errors,
-        "conflicts": static_result.conflicts,
-        "warnings": static_result.warnings,
-        "summary": stage3_summary,
-    }
+        if repair_iter >= MAX_REPAIR_ATTEMPTS:
+            print(f"  [Repair] {MAX_REPAIR_ATTEMPTS}회 재시도 후에도 검증 실패 — REJECT")
+            pipeline_result["decision"] = "REJECT"
+            log_path = _save_log(run_id, pipeline_result)
+            _print_footer("REJECT", log_path)
+            return 2
+
+        repair_feedback = _build_repair_feedback(static_result, repair_iter + 1, MAX_REPAIR_ATTEMPTS)
+        print(f"  [Repair {repair_iter + 1}/{MAX_REPAIR_ATTEMPTS}] 피드백 생성 — LLM 재시도...")
 
     # ── Stage 4: Digital Twin 검증 ────────────────────────────
     _print_stage(4, "Digital Twin 검증")
