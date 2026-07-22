@@ -363,6 +363,16 @@ body {
   justify-content: center;
   flex-shrink: 0;
 }
+.stage-conf {
+  font-size: 11px;
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  flex-shrink: 0;
+  transition: color 0.3s, border-color 0.3s;
+}
 
 .stage-detail {
   padding: 12px 16px 16px 54px;

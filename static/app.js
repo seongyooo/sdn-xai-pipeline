@@ -359,6 +359,7 @@ const state = {
   })),
   decision: null,
   decisionReport: null,
+  confidenceBreakdown: {},
   history: [],
   refreshIn: 1,
   twinActive: false,
@@ -372,8 +373,13 @@ async function runPipeline() {
   state.running = true;
   state.decision = null;
   state.decisionReport = null;
+  state.confidenceBreakdown = {};
   state.stages.forEach(s => {
     s.status = 'idle'; s.elapsed = null; s.result = null; s.expanded = false; s.progress_log = [];
+  });
+  [3, 4].forEach(n => {
+    const el = document.getElementById(`conf-${n}`);
+    if (el) el.style.display = 'none';
   });
   renderDecision();
   setRunBtn(true);
@@ -465,6 +471,7 @@ function handleSSEEvent(ev) {
   } else if (ev.type === 'decision') {
     state.decision = ev.decision;
     state.decisionReport = ev.report;
+    state.confidenceBreakdown = (ev.report && ev.report.confidence_breakdown) || {};
     // REJECT 시 실패한 단계 모두 자동 펼치기
     if (ev.decision === 'REJECT') {
       state.stages.forEach(s => {
@@ -474,6 +481,7 @@ function handleSSEEvent(ev) {
         }
       });
     }
+    renderConfidenceBadges();
     renderDecision();
   }
 }
@@ -544,11 +552,13 @@ function ensureStageCard(stageNum) {
   const card = document.createElement('div');
   card.className = 'stage-card stage-card-enter';
   card.id = `stage-${def.num}`;
+  const hasConf = def.num === 3 || def.num === 4;
   card.innerHTML = `
     <div class="stage-header" data-idx="${i}">
       <div class="stage-badge" id="badge-${def.num}">${def.num}</div>
       <div class="stage-name">${def.name}</div>
       <div class="stage-time" id="time-${def.num}">—</div>
+      ${hasConf ? `<div class="stage-conf" id="conf-${def.num}" style="display:none"></div>` : ''}
       <div class="stage-icon" id="icon-${def.num}">${iconDot()}</div>
     </div>
     <div class="stage-progress" id="progress-${def.num}">
@@ -629,6 +639,22 @@ function renderStage(i) {
   } else {
     detail.className = 'stage-detail';
   }
+}
+
+function renderConfidenceBadges() {
+  const map = { 3: 'static', 4: 'twin' };
+  Object.entries(map).forEach(([stageNum, key]) => {
+    const el = document.getElementById(`conf-${stageNum}`);
+    if (!el) return;
+    const score = state.confidenceBreakdown[key];
+    if (score == null) { el.style.display = 'none'; return; }
+    const pct = Math.round(score * 100);
+    const color = pct >= 80 ? '#10b981' : pct >= 50 ? '#f59e0b' : '#ef4444';
+    el.style.display = 'flex';
+    el.style.color = color;
+    el.style.borderColor = color + '40';
+    el.textContent = `${pct}%`;
+  });
 }
 
 function renderDecision() {
