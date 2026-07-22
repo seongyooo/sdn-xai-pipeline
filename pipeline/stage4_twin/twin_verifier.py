@@ -760,8 +760,15 @@ class TwinVerifier:
                         f"(예상: output:{expected_port})"
                     )
 
-            # ── 2차: IPV4_DST 기반 fallback 탐색 ───────────
-            # ONOS 파이프라이너가 priority를 내부적으로 변환하는 경우 대응
+            # ── 디버그: OVS 전체 flow 목록 출력 ────────────────
+            self._log(f"   [debug] {sw_name} OVS dump-flows:")
+            for _dl in result_clean.splitlines():
+                _dl = _dl.strip()
+                if _dl:
+                    self._log(f"     {_dl}")
+
+            # ── 2차: IPV4_DST / IN_PORT 기반 fallback 탐색 ──
+            # re.escape는 정규식용 — 평문 in 체크에는 raw 문자열 사용
             if flow is not None:
                 criteria = {
                     c["type"]: c
@@ -770,18 +777,19 @@ class TwinVerifier:
                 dst_ip_c = criteria.get("IPV4_DST", {}).get("ip", "")
                 in_port_c = criteria.get("IN_PORT", {}).get("port", "")
 
-                search_anchor = None
+                search_str = None   # plain string for `in` check
+                field_str = ""
                 if dst_ip_c:
                     dst_ip_host = dst_ip_c.split("/")[0]
-                    search_anchor = re.escape(dst_ip_host)
+                    search_str = dst_ip_host          # 예: "10.0.0.1"
                     field_str = f"nw_dst={dst_ip_host}"
                 elif in_port_c:
-                    search_anchor = re.escape(str(in_port_c))
+                    search_str = str(in_port_c)
                     field_str = f"in_port={in_port_c}"
 
-                if search_anchor:
+                if search_str:
                     for line in result_clean.splitlines():
-                        if search_anchor not in line:
+                        if search_str not in line:
                             continue
                         actual_port = _parse_output_port(line)
                         if actual_port is None:
@@ -791,7 +799,6 @@ class TwinVerifier:
                                 f"{sw_name} OVS flow: output:{actual_port} "
                                 f"({field_str} 기준 — priority 변환 감지됨)"
                             )
-                        # 같은 dst IP인데 다른 포트 → 불일치
                         return False, (
                             f"{sw_name} OVS flow: output:{actual_port} "
                             f"(예상: output:{expected_port} — 포트 불일치, "
