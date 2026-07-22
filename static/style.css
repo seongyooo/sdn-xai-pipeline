@@ -310,6 +310,11 @@ body {
   opacity: 0;
   transform: translateY(10px);
 }
+.stage-card-exit {
+  opacity: 0;
+  transform: translateY(-6px);
+  pointer-events: none;
+}
 .stage-card.border-running { border-color: #3b82f6; }
 .stage-card.border-error   { border-color: #ef4444; }
 

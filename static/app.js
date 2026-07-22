@@ -536,8 +536,17 @@ async function loadHistory() {
 
 function buildStageCards() {
   const section = document.getElementById('stages-section');
-  section.style.display = 'none';
-  section.innerHTML = '';
+  const cards = Array.from(section.querySelectorAll('.stage-card'));
+  if (cards.length === 0) {
+    section.style.display = 'none';
+    return;
+  }
+  // 기존 카드 fade-out 후 제거
+  cards.forEach(card => card.classList.add('stage-card-exit'));
+  setTimeout(() => {
+    section.innerHTML = '';
+    section.style.display = 'none';
+  }, 320); // transition 0.3s + 여유
 }
 
 function ensureStageCard(stageNum) {
