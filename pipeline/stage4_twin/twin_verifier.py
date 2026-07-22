@@ -706,9 +706,18 @@ class TwinVerifier:
             if sw_node is None:
                 return False, f"스위치 {sw_name}을 찾을 수 없음"
 
-            result = sw_node.cmd(f"ovs-ofctl dump-flows {sw_name} -O OpenFlow13")
-            # \r을 제거해 인터페이스 이름("s2-eth2\r") 안에 CR이 섞이는 경우를 방지
-            result_clean = result.replace("\r", "")
+            # ONOS가 flow를 확인한 후 OVS에 OpenFlow push가 완료되기까지
+            # 최대 2초 지연이 있을 수 있으므로 3회까지 재시도한다.
+            result = ""
+            result_clean = ""
+            for _attempt in range(3):
+                result = sw_node.cmd(f"ovs-ofctl dump-flows {sw_name} -O OpenFlow13")
+                # \r을 제거해 인터페이스 이름("s2-eth2\r") 안에 CR이 섞이는 경우를 방지
+                result_clean = result.replace("\r", "")
+                if f"priority={priority}" in result_clean:
+                    break
+                if _attempt < 2:
+                    time.sleep(1)
 
             # OVS는 포트를 숫자(output:2), 16진수(output:0x2),
             # 또는 인터페이스 이름(output:"s2-eth2") 형식으로 표기할 수 있다.
@@ -801,7 +810,9 @@ class TwinVerifier:
             src_node.sendCmd(
                 f"iperf3 -c {dst_ip} -t {duration} --connect-timeout 3000 2>&1"
             )
-            result = src_node.waitOutput(timeout=duration + 8)
+            # Mininet waitOutput()은 timeout 파라미터를 지원하지 않으므로 제거
+            # iperf3은 -t {duration} 후 자동 종료되므로 무기한 대기해도 안전
+            result = src_node.waitOutput()
 
             # iperf3 JSON 없이 텍스트 파싱
             m = re.search(r"(\d+\.?\d*)\s+(Gbits|Mbits|Kbits)/sec\s+(?:receiver|sender)", result)
@@ -820,7 +831,7 @@ class TwinVerifier:
                 time.sleep(0.8)
 
                 src_node.sendCmd(f"iperf -c {dst_ip} -t {duration} 2>&1")
-                result2 = src_node.waitOutput(timeout=duration + 8)
+                result2 = src_node.waitOutput()
                 dst_node.cmd("pkill iperf 2>/dev/null")
 
                 m2 = re.search(r"(\d+\.?\d*)\s+(Gbits|Mbits|Kbits)/sec", result2)
