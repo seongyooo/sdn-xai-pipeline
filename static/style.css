@@ -765,6 +765,7 @@ text.live-bw {
 }
 .topo-mode-btn:hover { border-color: #3b82f6; color: #f9fafb; }
 .topo-mode-btn.editing { border-color: #10b981; color: #10b981; }
+.topo-mode-btn.active { border-color: #3b82f6; color: #3b82f6; }
 
 #topo-editor-bar {
   display: flex;

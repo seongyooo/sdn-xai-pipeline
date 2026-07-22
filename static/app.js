@@ -465,6 +465,8 @@ function handleSSEEvent(ev) {
     renderStage(ev.stage - 1);
   } else if (ev.type === 'twin_info') {
     onTwinInfo(ev);
+  } else if (ev.type === 'twin_bw') {
+    onTwinBw(ev);
   } else if (ev.type === 'decision') {
     state.decision = ev.decision;
     state.decisionReport = ev.report;
@@ -787,6 +789,7 @@ let currentTopoLinks = []; // snapshot for twin viz (source, target as string ID
 let twinVizInfoList = []; // [{ srcNode, dstNode, blockNode, action }, ...]
 let twinVizPhase   = 'idle';
 let twinAnimTimers = [];
+let bwLabelsVisible = true; // 대역폭 레이블 표시 여부
 
 // ── Topology Editor State ─────────────────────────────────────────────────────
 
@@ -1493,7 +1496,8 @@ function initTopology() {
 
   topoZoomLayer = topoSvg.append('g').attr('class', 'zoom-layer');
   topoZoomLayer.append('g').attr('class', 'links');
-  topoZoomLayer.append('g').attr('class', 'bw-labels'); // link bandwidth text layer
+  topoZoomLayer.append('g').attr('class', 'bw-labels');    // link bandwidth text layer
+  topoZoomLayer.append('g').attr('class', 'twin-bw-layer'); // iperf 측정값 (항상 표시)
   topoZoomLayer.append('g').attr('class', 'nodes');
 
   topoZoom = d3.zoom()
@@ -1547,16 +1551,18 @@ function updateTopology(data) {
     .force('center',    d3.forceCenter(w / 2, h / 2))
     .force('collision', d3.forceCollide(24));
 
-  // Links — 대역폭에 따라 색상·두께 차별화
+  // Links — BW 표시 ON일 때만 대역폭 색상·두께 적용
   const link = topoZoomLayer.select('.links')
     .selectAll('line')
     .data(links, d => `${d.source?.id ?? d.source}-${d.target?.id ?? d.target}`)
     .join('line')
-    .attr('stroke',       d => bwLinkColor(d.bw))
-    .attr('stroke-width', d => bwLinkStroke(d.bw));
+    .attr('stroke',       d => bwLabelsVisible ? bwLinkColor(d.bw) : '#374151')
+    .attr('stroke-width', d => bwLabelsVisible ? bwLinkStroke(d.bw) : 1.5);
 
   // Bandwidth labels — 링크 중점에 "NNM" 텍스트 표시
-  const bwLabel = topoZoomLayer.select('.bw-labels')
+  const bwLabelGroup = topoZoomLayer.select('.bw-labels')
+    .style('display', bwLabelsVisible ? null : 'none');
+  const bwLabel = bwLabelGroup
     .selectAll('text.live-bw')
     .data(links.filter(d => d.bw != null),
           d => `bw-${d.source?.id ?? d.source}-${d.target?.id ?? d.target}`)
@@ -1797,6 +1803,9 @@ function stopTwinViz() {
     topoSvg.selectAll('.twin-viz').remove();
     topoSvg.selectAll('.twin-node-indicator').remove();
   }
+  if (topoZoomLayer) {
+    topoZoomLayer.select('.twin-bw-layer').selectAll('.twin-bw-badge').remove();
+  }
   twinVizInfoList = [];
   twinVizPhase    = 'idle';
 }
@@ -1815,6 +1824,49 @@ function onTwinInfo(ev) {
   twinVizInfoList.push({ srcNode, dstNode, blockNode, action: ev.action });
   twinVizPhase = 'idle';
   renderTwinHighlights();
+}
+
+// twin_bw: iperf 측정 결과를 토폴로지 링크 중점에 배지로 표시
+function onTwinBw(ev) {
+  if (!topoZoomLayer) return;
+  const srcNode = currentTopoNodes.find(n => n.type === 'host' && n.ip === ev.src_ip) || null;
+  const dstNode = currentTopoNodes.find(n => n.type === 'host' && n.ip === ev.dst_ip) || null;
+  if (!srcNode || !dstNode) return;
+
+  const srcPos = nodePositions.get(srcNode.id);
+  const dstPos = nodePositions.get(dstNode.id);
+  if (!srcPos || !dstPos) return;
+
+  const mx = (srcPos.x + dstPos.x) / 2;
+  const my = (srcPos.y + dstPos.y) / 2;
+
+  // twin-bw-layer에 배지 추가 (BW 토글 무관, 줌과 함께 움직임)
+  if (!topoZoomLayer) return;
+  const layer = topoZoomLayer.select('.twin-bw-layer');
+  if (layer.empty()) return;
+
+  // 기존 배지 제거 후 새로 그리기
+  layer.selectAll('.twin-bw-badge').remove();
+
+  const badge = layer.append('g')
+    .attr('class', 'twin-bw-badge')
+    .attr('transform', `translate(${mx},${my})`);
+
+  badge.append('rect')
+    .attr('x', -20).attr('y', -8)
+    .attr('width', 40).attr('height', 16)
+    .attr('rx', 4)
+    .attr('fill', '#0a0e1a')
+    .attr('stroke', '#10b981')
+    .attr('stroke-width', 1);
+
+  badge.append('text')
+    .attr('text-anchor', 'middle')
+    .attr('dy', '0.35em')
+    .attr('font-size', 8)
+    .attr('font-family', 'JetBrains Mono, monospace')
+    .attr('fill', '#10b981')
+    .text(`${ev.bw_mbps}M`);
 }
 
 function findTopoPath(fromId, toId) {
@@ -2037,6 +2089,24 @@ function init() {
     document.getElementById('app').classList.add('layout-swapped');
   }
   document.getElementById('layout-swap-btn').addEventListener('click', toggleLayoutSwap);
+
+  // BW 레이블 토글 버튼
+  document.getElementById('topo-bw-toggle-btn').addEventListener('click', () => {
+    bwLabelsVisible = !bwLabelsVisible;
+    const btn = document.getElementById('topo-bw-toggle-btn');
+    if (bwLabelsVisible) {
+      btn.classList.add('active');
+    } else {
+      btn.classList.remove('active');
+    }
+    if (topoZoomLayer) {
+      topoZoomLayer.select('.bw-labels').style('display', bwLabelsVisible ? null : 'none');
+      // 링크 색상·두께도 즉시 업데이트
+      topoZoomLayer.select('.links').selectAll('line')
+        .attr('stroke',       d => bwLabelsVisible ? bwLinkColor(d.bw) : '#374151')
+        .attr('stroke-width', d => bwLabelsVisible ? bwLinkStroke(d.bw) : 1.5);
+    }
+  });
 
   // Topology editor controls
 

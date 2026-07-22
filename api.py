@@ -358,6 +358,7 @@ def _run_pipeline(req: RunRequest, q: std_queue.Queue) -> None:
             twin_result = verifier.verify(
                 flowrule,
                 progress_cb=lambda msg: progress(4, msg),
+                emit_cb=emit,
             )
             if twin_result.checks:
                 progress(4, "─" * 36)

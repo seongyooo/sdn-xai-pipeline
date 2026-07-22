@@ -148,7 +148,7 @@ class TwinVerifier:
         if getattr(self, "_progress_cb", None):
             self._progress_cb(msg)
 
-    def verify(self, flowrule: dict, progress_cb=None) -> TwinResult:
+    def verify(self, flowrule: dict, progress_cb=None, emit_cb=None) -> TwinResult:
         """
         FlowRule을 Digital Twin에 배포하고 검증한다.
 
@@ -167,6 +167,7 @@ class TwinVerifier:
             TwinResult
         """
         self._progress_cb = progress_cb
+        self._emit_cb = emit_cb
         # ── 플랫폼 체크 ────────────────────────────────────────
         skip_reason = self._check_platform()
         if skip_reason:
@@ -472,6 +473,14 @@ class TwinVerifier:
                     evidence[f"{bw_key}_mbps"] = bw_mbps
                     evidence[f"{bw_key}_msg"]  = bw_msg
                     self._log(f"   ↳ {bw_msg}")
+                    # 측정된 대역폭을 UI 토폴로지에 실시간 표시
+                    if bw_mbps > 0 and getattr(self, "_emit_cb", None):
+                        self._emit_cb({
+                            "type": "twin_bw",
+                            "src_ip": spec_src_ip or "",
+                            "dst_ip": spec_dst_ip_resolved or "",
+                            "bw_mbps": bw_mbps,
+                        })
 
                 # ── 6c. 스티어링 룰 제거 ──────────────────────────────
                 for hop in steered_switches:
