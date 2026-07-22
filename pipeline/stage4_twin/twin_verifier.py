@@ -708,20 +708,18 @@ class TwinVerifier:
 
             result = sw_node.cmd(f"ovs-ofctl dump-flows {sw_name} -O OpenFlow13")
 
-            # priority=N 인 flow 라인 탐색
-            matched_line = None
-            for line in result.splitlines():
-                if f"priority={priority}" in line:
-                    matched_line = line
-                    break
-
-            if matched_line is None:
-                return False, f"{sw_name}: priority={priority} flow 없음 (OVS에 미설치)"
-
-            # actions 섹션에서 output:N 파싱
-            m = re.search(r"output:(\d+)", matched_line)
+            # OVS 출력에 \r이 중간에 삽입되면 splitlines()가 actions 부분을
+            # 별개 라인으로 분리할 수 있으므로, 전체 텍스트에서 정규식으로 탐색한다.
+            # [^\n]*? → \r 포함 임의 문자열 (개행 제외)로 priority~output를 한 번에 매치
+            m = re.search(
+                rf"priority={priority}[^\n]*?output:(0x[0-9a-fA-F]+|\d+)",
+                result,
+            )
             if m:
-                actual_port = int(m.group(1))
+                port_str = m.group(1)
+                actual_port = (
+                    int(port_str, 16) if port_str.startswith("0x") else int(port_str)
+                )
                 if actual_port == expected_port:
                     return True, (
                         f"{sw_name} OVS flow: output:{actual_port} "
@@ -733,8 +731,14 @@ class TwinVerifier:
                         f"(예상: output:{expected_port} — 포트 불일치)"
                     )
 
-            # drop 또는 NOACTION
-            if "drop" in matched_line.lower() or "noaction" in matched_line.lower():
+            # priority 라인 자체가 없으면 미설치
+            if f"priority={priority}" not in result:
+                return False, f"{sw_name}: priority={priority} flow 없음 (OVS에 미설치)"
+
+            # 라인은 있는데 output 파싱 실패 — drop/noaction 또는 다른 action 형식
+            snippet = result[result.find(f"priority={priority}"):
+                             result.find(f"priority={priority}") + 200].split("\n")[0]
+            if "drop" in snippet.lower() or "noaction" in snippet.lower():
                 return False, (
                     f"{sw_name} OVS flow: DROP/NOACTION "
                     f"(예상: output:{expected_port})"
@@ -742,7 +746,7 @@ class TwinVerifier:
 
             return False, (
                 f"{sw_name} OVS flow에서 output 포트를 파싱할 수 없음: "
-                f"{matched_line[:120]}"
+                f"{snippet[:120]}"
             )
 
         except Exception as exc:
