@@ -30,12 +30,20 @@ class XAIReport:
     flowrule_summary: str         # 생성된 FlowRule 요약
     static_summary: str           # 정적 검증 결과 요약
     twin_summary: str             # Digital Twin 결과 요약
-    decision: str                 # "APPROVE" | "REJECT"
+    decision: str                 # "APPROVE" | "APPROVE_WITHOUT_TWIN" | "REJECT"
     decision_reason: str          # 판정 근거
+    confidence: float = 0.0       # 종합 확신도 (0.0 ~ 1.0)
+    confidence_breakdown: dict = field(default_factory=dict)  # 단계별 확신도
     evidence: list[dict] = field(default_factory=list)  # [{stage, finding, data}, ...]
 
     def to_text(self) -> str:
         """운영자용 자연어 요약 텍스트 생성"""
+        breakdown = self.confidence_breakdown
+        conf_detail = ""
+        if breakdown:
+            parts = [f"{k}={v:.2f}" for k, v in breakdown.items()]
+            conf_detail = f" ({', '.join(parts)})"
+
         lines = [
             f"인텐트: {self.intent}",
             "",
@@ -45,6 +53,7 @@ class XAIReport:
             f"[Digital Twin] {self.twin_summary}",
             "",
             f"최종 결정: {self.decision}",
+            f"확신도: {self.confidence:.2f}{conf_detail}",
             f"판정 근거: {self.decision_reason}",
         ]
         return "\n".join(lines)
@@ -58,6 +67,8 @@ class XAIReport:
             "static_summary": self.static_summary,
             "twin_summary": self.twin_summary,
             "decision": self.decision,
+            "confidence": round(self.confidence, 4),
+            "confidence_breakdown": {k: round(v, 4) for k, v in self.confidence_breakdown.items()},
             "decision_reason": self.decision_reason,
             "evidence": self.evidence,
         }
@@ -113,12 +124,15 @@ class XAIExplainer:
         else:
             decision = "APPROVE"
 
-        # ── 3. 판정 근거 ──────────────────────────────────────
+        # ── 3. 확신도 계산 ────────────────────────────────────
+        confidence, confidence_breakdown = self._compute_confidence(static_result, twin_result)
+
+        # ── 4. 판정 근거 ──────────────────────────────────────
         decision_reason = self._build_decision_reason(
             decision, static_result, twin_result, effective_ir
         )
 
-        # ── 4. evidence 목록 구성 ─────────────────────────────
+        # ── 5. evidence 목록 구성 ─────────────────────────────
         evidence = self._build_evidence(effective_ir, compound, flowrule, static_result, twin_result)
 
         return XAIReport(
@@ -128,9 +142,63 @@ class XAIExplainer:
             static_summary=static_summary,
             twin_summary=twin_summary,
             decision=decision,
+            confidence=confidence,
+            confidence_breakdown=confidence_breakdown,
             decision_reason=decision_reason,
             evidence=evidence,
         )
+
+    # ── 확신도 계산 ───────────────────────────────────────────
+
+    def _compute_confidence(
+        self,
+        static_result: StaticResult,
+        twin_result: TwinResult,
+    ) -> tuple[float, dict]:
+        """
+        Stage 3(정적 검증)과 Stage 4(Digital Twin) 결과로 확신도를 계산한다.
+
+        static 점수:
+          - 충돌 없음, 경고 없음 → 1.0
+          - 충돌 없음, 경고 있음 → 0.8
+          - 충돌 있음            → 0.3
+          - 스키마 오류          → 0.0
+
+        twin 점수:
+          - passed  → 1.0
+          - skipped → 0.7  (검증 생략, 불확실)
+          - failed  → 0.0
+          - error   → 0.0
+
+        종합 확신도: static × 0.5 + twin × 0.5
+        (twin이 skipped이면 static 단독으로 계산: static × 1.0)
+
+        Returns:
+            (confidence, breakdown_dict)
+        """
+        # static 점수
+        if static_result.schema_errors:
+            static_score = 0.0
+        elif static_result.conflicts:
+            static_score = 0.3
+        elif static_result.warnings:
+            static_score = 0.8
+        else:
+            static_score = 1.0
+
+        # twin 점수
+        twin_score_map = {"passed": 1.0, "skipped": 0.7, "failed": 0.0, "error": 0.0}
+        twin_score = twin_score_map.get(twin_result.status, 0.0)
+
+        # 종합: twin skipped이면 static 단독
+        if twin_result.status == "skipped":
+            confidence = static_score
+            breakdown = {"static": static_score, "twin": twin_score}
+        else:
+            confidence = static_score * 0.5 + twin_score * 0.5
+            breakdown = {"static": static_score, "twin": twin_score}
+
+        return round(confidence, 4), breakdown
 
     # ── 내부 요약 메서드 ──────────────────────────────────────
 
