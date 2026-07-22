@@ -269,8 +269,11 @@ def compile_flowrule(ir: IntentIR) -> dict:
             if c["type"] in ("ETH_TYPE", "IN_PORT", "IPV4_DST")
         ]
         egress_treatment = {"instructions": [{"type": "OUTPUT", "port": alt_port}]}
+        # egress priority는 ingress보다 높아야 한다.
+        # waypoint(포트 N)에서 복귀한 트래픽이 ingress 룰(IN_PORT 없음)과
+        # egress 룰(IN_PORT=N) 양쪽 모두에 매치될 때, egress가 우선해야 루프를 방지할 수 있다.
         egress_flow = _make_flow(
-            device_id, priority - 1000, egress_criteria_minimal, egress_treatment
+            device_id, priority + 1, egress_criteria_minimal, egress_treatment
         )
 
         flows = [ingress_flow, egress_flow]

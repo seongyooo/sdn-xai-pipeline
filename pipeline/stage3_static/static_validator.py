@@ -142,7 +142,13 @@ def validate(
     # Shadowing·Correlation·Imbrication만 실제 충돌(REJECT 사유)로 취급한다.
     _WARNING_ONLY = {"Redundancy", "Generalization"}
 
-    if not schema_errors and existing_flows:
+    # SFC 인텐트는 ingress/egress 쌍을 함께 배포하는 구조이므로,
+    # ONOS에 남아 있는 이전 SFC 룰과 비교하면 false positive Correlation이 발생한다.
+    # (새 egress의 IPV4_DST가 기존 ingress와 겹치고 action이 달라 오탐)
+    # SFC 재배포 시 ONOS가 동일 priority/match 룰을 덮어쓰므로 외부 충돌 탐지를 스킵한다.
+    is_sfc = flowrule.get("intent_action") == "sfc"
+
+    if not schema_errors and existing_flows and not is_sfc:
         try:
             all_detected = detect_conflict(flowrule, existing_flows)
             for c in all_detected:
