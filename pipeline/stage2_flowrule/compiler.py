@@ -67,11 +67,13 @@ def extract_device_id(device_hint: str) -> str:
     if re.match(r"^of:[0-9a-f]{16}$", hint, re.IGNORECASE):
         return hint.lower()
 
-    # 숫자 직접 추출 (예: "switch 4", "s4", "sw2", "node 2")
-    # \b 대신 (\d+) 사용 — "s2" 같은 경우 's'와 '2' 사이에 단어 경계가 없음
-    num_match = re.search(r"(\d+)", hint)
-    if num_match:
-        num = int(num_match.group(1))
+    # "switch N" / "sw N" / "s N" / "node N" 패턴을 bare digit보다 먼저 시도.
+    # 예: "switches 10 and 2" → switch 키워드 뒤 첫 숫자(10) 추출
+    specific_match = re.search(
+        r"(?:switch(?:es)?|sw|s|node)\s*(\d+)", hint, re.IGNORECASE
+    )
+    if specific_match:
+        num = int(specific_match.group(1))
         return f"of:{num:016x}"
 
     # 서수 매핑 시도 (예: "switch second", "third node")
@@ -79,6 +81,12 @@ def extract_device_id(device_hint: str) -> str:
     for word, num in SWITCH_ID_ORDINALS.items():
         if word in hint_lower:
             return f"of:{num:016x}"
+
+    # 최후 수단: 첫 번째 숫자 추출 (예: 순수 숫자 입력 "4")
+    num_match = re.search(r"(\d+)", hint)
+    if num_match:
+        num = int(num_match.group(1))
+        return f"of:{num:016x}"
 
     raise CompileError(
         f"device_hint에서 스위치 번호를 파싱할 수 없습니다: '{device_hint}'"

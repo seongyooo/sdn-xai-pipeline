@@ -26,6 +26,13 @@ class LLMClient:
         self.api_key = config.LLM_API_KEY
         self.embed_model = config.EMBED_MODEL
 
+        # Gemini 모델 사용 시 API 키를 초기화 시점에 검사 (런타임 실패 방지)
+        if self._is_gemini() and not config.GOOGLE_API_KEY:
+            raise RuntimeError(
+                f"모델 '{self.model}'은 Gemini 모델이지만 GOOGLE_API_KEY가 설정되지 않았습니다. "
+                ".env 파일에 GOOGLE_API_KEY를 추가하세요."
+            )
+
     # ── 공개 인터페이스 ────────────────────────────────────────
 
     def call(self, system: str, user: str) -> dict | None:

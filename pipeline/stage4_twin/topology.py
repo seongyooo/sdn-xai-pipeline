@@ -9,7 +9,43 @@ Mininet 임포트는 이 파일을 임포트하는 순간이 아닌
 각 build_* 함수 내부에서만 수행한다 (Linux 환경 체크 후 호출).
 """
 from __future__ import annotations
+
+import contextlib
 from typing import Optional
+
+
+@contextlib.contextmanager
+def suppress_htb_quantum_warning():
+    """
+    sch_htb 'quantum of class X is big' 경고를 Mininet 로그에서 억제하는
+    컨텍스트 매니저.
+
+    원인: Mininet이 TCLink로 대역폭 제한 링크를 설정할 때 Linux TC(HTB qdisc)가
+    quantum 값이 크다는 커널 경고를 발생시킨다. 이는 TC의 r2q 기본값(10)이
+    높은 대역폭 설정과 맞지 않아 생기는 benign warning으로, 실제 네트워크
+    동작에는 영향을 미치지 않는다.
+
+    억제 방법: mininet.log.error를 일시적으로 패치하여 해당 메시지만 필터링.
+    """
+    try:
+        import mininet.log as _mn_log
+        _orig_error = _mn_log.error
+
+        def _filtered_error(*args, **kwargs):
+            msg = "".join(str(a) for a in args)
+            if "quantum of class" in msg and "is big" in msg:
+                return  # benign 경고 억제
+            _orig_error(*args, **kwargs)
+
+        _mn_log.error = _filtered_error
+        yield
+    except ImportError:
+        yield  # Mininet 미설치 환경에서는 아무것도 하지 않음
+    finally:
+        try:
+            _mn_log.error = _orig_error
+        except Exception:
+            pass
 
 EXPECTED_DEVICE_IDS: set[str] = {
     "of:0000000000000001",

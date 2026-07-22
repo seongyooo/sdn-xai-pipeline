@@ -13,9 +13,10 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, Security
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.security import APIKeyHeader
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -30,10 +31,28 @@ import config
 app = FastAPI(title="XAI-SDN Pipeline API")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=config.CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── API Key 인증 ──────────────────────────────────────────────────────────────
+# API_KEY가 설정된 경우에만 X-API-Key 헤더를 요구한다.
+# 빈 문자열이면 인증 없이 허용 (개발 모드).
+_api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+async def _require_api_key(key: str | None = Security(_api_key_header)) -> None:
+    if config.API_KEY and key != config.API_KEY:
+        raise HTTPException(status_code=403, detail="Invalid or missing X-API-Key header")
+
+
+# 서버 시작 시 설정 경고 출력
+for _warn in config.validate_config():
+    print(f"[config] WARNING: {_warn}")
+
+
+_INTENT_MAX_LEN = 1000  # 프롬프트 인젝션 및 과도한 입력 방지
 
 
 class RunRequest(BaseModel):
@@ -45,9 +64,12 @@ class RunRequest(BaseModel):
     skip_deploy: bool = False
 
     def validate_intent(self) -> str | None:
-        """빈 인텐트면 오류 메시지 반환, 정상이면 None"""
-        if not self.intent.strip():
+        """입력 검증. 오류 메시지 반환, 정상이면 None."""
+        stripped = self.intent.strip()
+        if not stripped:
             return "인텐트가 비어 있습니다."
+        if len(stripped) > _INTENT_MAX_LEN:
+            return f"인텐트가 너무 깁니다 ({len(stripped)}자). 최대 {_INTENT_MAX_LEN}자."
         return None
 
 
@@ -59,23 +81,7 @@ def _sse(data: dict) -> str:
 
 # ── Repair Loop helper ────────────────────────────────────────────────────────
 
-MAX_REPAIR_ATTEMPTS = 3
-
-
-def _build_repair_feedback(static_result, attempt: int, max_attempts: int) -> str:
-    lines = [
-        f"[Repair attempt {attempt}/{max_attempts} — previous output was rejected by static validation]"
-    ]
-    if static_result.schema_errors:
-        lines.append("Schema errors:")
-        for e in static_result.schema_errors:
-            lines.append(f"  - {e}")
-    if static_result.conflicts:
-        lines.append("Conflicts:")
-        for c in static_result.conflicts:
-            lines.append(f"  - [{c.get('conflict_type', '?')}] {c.get('reason', '')}")
-    lines.append("Please revise the intent representation to fix these issues.")
-    return "\n".join(lines)
+from repair_utils import MAX_REPAIR_ATTEMPTS, build_repair_feedback as _build_repair_feedback
 
 
 # ── Pipeline runner (synchronous, called in thread) ───────────────────────────
@@ -142,8 +148,12 @@ def _run_pipeline(req: RunRequest, q: std_queue.Queue) -> None:
                     config.DATASET_PATH, client
                 )
                 progress(1, f"RAG 완료 — {len(rag_texts) if rag_texts else 0}개 예시 임베딩됨")
+            except (ImportError, RuntimeError) as rag_exc:
+                progress(1, f"RAG 스킵 (의존성 누락: {str(rag_exc)[:80]})")
+            except ValueError as rag_exc:
+                progress(1, f"RAG 스킵 (데이터셋 형식 오류: {str(rag_exc)[:80]})")
             except Exception as rag_exc:
-                progress(1, f"RAG 스킵 (오류: {str(rag_exc)[:60]})")
+                progress(1, f"RAG 스킵 (임베딩 오류: {str(rag_exc)[:80]})")
         elif req.no_rag:
             progress(1, "RAG 비활성화 — LLM 직접 호출")
         else:
@@ -151,11 +161,17 @@ def _run_pipeline(req: RunRequest, q: std_queue.Queue) -> None:
 
         from models.topology import NetworkTopology
         custom_topo = _load_custom_topology()
-        topology = (
-            NetworkTopology.from_custom_file(custom_topo)
-            if custom_topo
-            else NetworkTopology.diamond()
-        )
+        if custom_topo:
+            topology = NetworkTopology.from_custom_file(custom_topo)
+            progress(1, "토폴로지: 커스텀 파일 로드")
+        else:
+            try:
+                from stage4_twin.onos_client import OnosClient
+                topology = NetworkTopology.from_onos(OnosClient())
+                progress(1, "토폴로지: ONOS 실시간 조회")
+            except Exception:
+                topology = NetworkTopology.diamond()
+                progress(1, "토폴로지: 정적 다이아몬드 (ONOS 연결 없음)")
         parser_obj = IntentParser(
             client=client,
             rag_index=rag_index,
@@ -306,6 +322,7 @@ def _run_pipeline(req: RunRequest, q: std_queue.Queue) -> None:
         repair_feedback = _build_repair_feedback(static_result, repair_iter + 1, MAX_REPAIR_ATTEMPTS)
         progress(3, f"[Repair {repair_iter + 1}/{MAX_REPAIR_ATTEMPTS}] 피드백 생성 완료 — LLM 재시도")
 
+
     # ── Stage 4: Digital Twin ─────────────────────────────────────────────────
     t = start(4, "Digital Twin")
     if req.skip_twin:
@@ -444,7 +461,7 @@ def _run_pipeline(req: RunRequest, q: std_queue.Queue) -> None:
 
 # ── API Routes ────────────────────────────────────────────────────────────────
 
-@app.post("/api/run")
+@app.post("/api/run", dependencies=[Depends(_require_api_key)])
 async def run_pipeline(req: RunRequest):
     q: std_queue.Queue = std_queue.Queue()
 
@@ -459,8 +476,7 @@ async def run_pipeline(req: RunRequest):
                     break
             except std_queue.Empty:
                 if fut.done():
-                    # Thread finished — drain any remaining events that arrived
-                    # just before fut.done() was observed (no more will be added)
+                    # Thread finished — drain any remaining events
                     while True:
                         try:
                             msg = q.get_nowait()
@@ -470,7 +486,14 @@ async def run_pipeline(req: RunRequest):
                                 return
                         except std_queue.Empty:
                             break
-                    break
+                    # Thread ended without emitting "done" — emit error + done
+                    try:
+                        await fut
+                    except Exception as exc:
+                        yield _sse({"type": "error", "stage": 0,
+                                    "error": f"파이프라인 스레드 오류: {exc}"})
+                    yield _sse({"type": "done"})
+                    return
                 await asyncio.sleep(0.05)
                 yield ": keepalive\n\n"
         await fut

@@ -329,6 +329,99 @@ const TOPOLOGY_PRESETS = {
       { id: 'l19', source: 's4', target: 'h8', bw: 1 },
     ],
   },
+
+  // Multi-Tier Clos: 5계층 Clos Fabric (사용자 커스텀 연구망)
+  // Ingress(1) → Access(2) → Distribution(4) → Core(4) → Aggregation(2) → Egress(1)
+  // 듀얼홈 호스트 포함, 14SW · 10H
+  'clos-fabric': {
+    label: 'Clos Fabric',
+    switches: [
+      { id: 's1',  label: 'S1',  dpid: '0000000000000001', x: -47,  y: 132 }, // Ingress
+      { id: 's2',  label: 'S2',  dpid: '0000000000000002', x: 109,  y: 133 }, // Access
+      { id: 's3',  label: 'S3',  dpid: '0000000000000003', x: 237,  y: 133 }, // Distribution
+      { id: 's4',  label: 'S4',  dpid: '0000000000000004', x: 339,  y: 129 }, // Core
+      { id: 's5',  label: 'S5',  dpid: '0000000000000005', x: 97,   y: 89  }, // Access
+      { id: 's6',  label: 'S6',  dpid: '0000000000000006', x: 239,  y: 97  }, // Distribution
+      { id: 's7',  label: 'S7',  dpid: '0000000000000007', x: 245,  y: 194 }, // Distribution
+      { id: 's8',  label: 'S8',  dpid: '0000000000000008', x: 239,  y: 39  }, // Distribution
+      { id: 's9',  label: 'S9',  dpid: '0000000000000009', x: 349,  y: 86  }, // Core
+      { id: 's10', label: 'S10', dpid: '0000000000000010', x: 351,  y: 169 }, // Core
+      { id: 's11', label: 'S11', dpid: '0000000000000011', x: 348,  y: 222 }, // Core
+      { id: 's12', label: 'S12', dpid: '0000000000000012', x: 446,  y: 76  }, // Aggregation
+      { id: 's13', label: 'S13', dpid: '0000000000000013', x: 455,  y: 143 }, // Aggregation
+      { id: 's14', label: 'S14', dpid: '0000000000000014', x: 558,  y: 114 }, // Egress
+    ],
+    hosts: [
+      { id: 'h1',  label: 'H1',  ip: '10.0.0.1',  mac: '00:00:00:00:00:01', x: -161, y: 122 },
+      { id: 'h2',  label: 'H2',  ip: '10.0.0.2',  mac: '00:00:00:00:00:02', x: 574,  y: 167 },
+      { id: 'h3',  label: 'H3',  ip: '10.0.0.3',  mac: '00:00:00:00:00:03', x: 85,   y: 270 },
+      { id: 'h4',  label: 'H4',  ip: '10.0.0.4',  mac: '00:00:00:00:00:04', x: 227,  y: 305 },
+      { id: 'h5',  label: 'H5',  ip: '10.0.0.5',  mac: '00:00:00:00:00:05', x: 361,  y: 307 },
+      { id: 'h6',  label: 'H6',  ip: '10.0.0.6',  mac: '00:00:00:00:00:06', x: 480,  y: 268 },
+      { id: 'h7',  label: 'H7',  ip: '10.0.0.7',  mac: '00:00:00:00:00:07', x: 55,   y: -34 },
+      { id: 'h8',  label: 'H8',  ip: '10.0.0.8',  mac: '00:00:00:00:00:08', x: 282,  y: -63 },
+      { id: 'h9',  label: 'H9',  ip: '10.0.0.9',  mac: '00:00:00:00:00:09', x: 385,  y: -42 },
+      { id: 'h10', label: 'H10', ip: '10.0.0.10', mac: '00:00:00:00:00:10', x: 508,  y: -15 },
+    ],
+    links: [
+      // Ingress ↔ Access
+      { id: 'l10', source: 's1',  target: 's5',  bw: 10  },
+      { id: 'l11', source: 's1',  target: 's2',  bw: 10  },
+      // Access → Distribution (2×4 full bipartite)
+      { id: 'l12', source: 's5',  target: 's8',  bw: 10  },
+      { id: 'l13', source: 's5',  target: 's6',  bw: 10  },
+      { id: 'l14', source: 's5',  target: 's3',  bw: 10  },
+      { id: 'l15', source: 's5',  target: 's7',  bw: 10  },
+      { id: 'l16', source: 's2',  target: 's8',  bw: 10  },
+      { id: 'l17', source: 's2',  target: 's6',  bw: 10  },
+      { id: 'l18', source: 's2',  target: 's3',  bw: 10  },
+      { id: 'l19', source: 's2',  target: 's7',  bw: 10  },
+      // Distribution → Core (4×4 full bipartite Clos)
+      { id: 'l20', source: 's8',  target: 's9',  bw: 10  },
+      { id: 'l21', source: 's8',  target: 's4',  bw: 10  },
+      { id: 'l22', source: 's8',  target: 's10', bw: 10  },
+      { id: 'l23', source: 's8',  target: 's11', bw: 10  },
+      { id: 'l24', source: 's6',  target: 's9',  bw: 10  },
+      { id: 'l25', source: 's6',  target: 's4',  bw: 10  },
+      { id: 'l26', source: 's6',  target: 's10', bw: 10  },
+      { id: 'l27', source: 's6',  target: 's11', bw: 10  },
+      { id: 'l28', source: 's3',  target: 's9',  bw: 10  },
+      { id: 'l29', source: 's3',  target: 's4',  bw: 10  },
+      { id: 'l30', source: 's3',  target: 's10', bw: 10  },
+      { id: 'l31', source: 's3',  target: 's11', bw: 10  },
+      { id: 'l32', source: 's7',  target: 's9',  bw: 10  },
+      { id: 'l33', source: 's7',  target: 's4',  bw: 10  },
+      { id: 'l34', source: 's7',  target: 's10', bw: 10  },
+      { id: 'l35', source: 's7',  target: 's11', bw: 10  },
+      // Core → Aggregation (4×2)
+      { id: 'l36', source: 's9',  target: 's12', bw: 10  },
+      { id: 'l37', source: 's9',  target: 's13', bw: 10  },
+      { id: 'l38', source: 's4',  target: 's12', bw: 10  },
+      { id: 'l39', source: 's4',  target: 's13', bw: 10  },
+      { id: 'l40', source: 's10', target: 's12', bw: 10  },
+      { id: 'l41', source: 's10', target: 's13', bw: 10  },
+      { id: 'l42', source: 's11', target: 's12', bw: 10  },
+      { id: 'l43', source: 's11', target: 's13', bw: 10  },
+      // Aggregation → Egress
+      { id: 'l44', source: 's12', target: 's14', bw: 10  },
+      { id: 'l45', source: 's13', target: 's14', bw: 10  },
+      // Host uplinks (100 Mbps)
+      { id: 'l9',  source: 'h1',  target: 's1',  bw: 100 },
+      { id: 'l46', source: 's14', target: 'h2',  bw: 100 },
+      { id: 'l47', source: 's2',  target: 'h3',  bw: 100 },
+      { id: 'l48', source: 's7',  target: 'h4',  bw: 100 }, // dual-homed
+      { id: 'l49', source: 's11', target: 'h4',  bw: 100 }, // dual-homed
+      { id: 'l50', source: 's7',  target: 'h5',  bw: 100 }, // dual-homed
+      { id: 'l51', source: 's11', target: 'h5',  bw: 100 }, // dual-homed
+      { id: 'l52', source: 's13', target: 'h6',  bw: 100 },
+      { id: 'l53', source: 'h7',  target: 's5',  bw: 100 },
+      { id: 'l54', source: 'h8',  target: 's8',  bw: 100 }, // dual-homed
+      { id: 'l55', source: 'h8',  target: 's9',  bw: 100 }, // dual-homed
+      { id: 'l56', source: 's9',  target: 'h9',  bw: 100 }, // dual-homed
+      { id: 'l57', source: 's8',  target: 'h9',  bw: 100 }, // dual-homed
+      { id: 'l58', source: 'h10', target: 's12', bw: 100 },
+    ],
+  },
 };
 
 const STAGE_DEFS = [
@@ -341,6 +434,10 @@ const STAGE_DEFS = [
 ];
 
 // ── State ─────────────────────────────────────────────────────────────────────
+
+// 스테이지 카드가 running 상태로 최소 이 시간(ms)은 보이도록 보장
+const MIN_STAGE_VISIBLE_MS = 700;
+const _stageRunningAt = {}; // stageNum → Date.now() when running was shown
 
 const state = {
   intent: '',
@@ -377,6 +474,7 @@ async function runPipeline() {
   state.stages.forEach(s => {
     s.status = 'idle'; s.elapsed = null; s.result = null; s.expanded = false; s.progress_log = [];
   });
+  Object.keys(_stageRunningAt).forEach(k => delete _stageRunningAt[k]);
   buildStageCards();   // 이전 실행 카드 DOM 전체 초기화
   renderDecision();
   setRunBtn(true);
@@ -440,29 +538,51 @@ function handleSSEEvent(ev) {
     }
   } else if (ev.type === 'stage') {
     const s = state.stages[ev.stage - 1];
-    s.status = ev.status;
-    if (ev.elapsed != null) s.elapsed = ev.elapsed;
-    if (ev.result != null) s.result = ev.result;
-    if (ev.error != null) s.result = { error: ev.error };
-    // 카드가 없으면 먼저 생성 (단계적 등장)
-    ensureStageCard(ev.stage);
-    // 에러 단계는 자동으로 펼쳐서 즉시 확인 가능하게
-    if (ev.status === 'error') s.expanded = true;
-    // Digital Twin 단계: 실행 시 자동 확장 + 토폴로지 freeze 제어
-    if (ev.stage === 4) {
-      if (ev.status === 'running') {
+
+    if (ev.status === 'running') {
+      // 즉시 카드 생성 + running 상태 표시
+      s.status = 'running';
+      ensureStageCard(ev.stage);
+      if (ev.stage === 4) {
         s.expanded = true;
         state.twinActive = true;
-        twinVizInfoList = []; // 새 twin 실행 시 초기화
+        twinVizInfoList = [];
+      }
+      _stageRunningAt[ev.stage] = Date.now();
+      renderStage(ev.stage - 1);
+      renderPipelineProgress();
+    } else {
+      // done / error / skipped: running 상태를 최소 MIN_STAGE_VISIBLE_MS 동안 보여준 뒤 전환
+      ensureStageCard(ev.stage); // skipped처럼 running 없이 끝나는 경우 대비
+
+      const applyFinal = () => {
+        s.status = ev.status;
+        if (ev.elapsed != null) s.elapsed = ev.elapsed;
+        if (ev.result != null) s.result = ev.result;
+        if (ev.error != null) s.result = { error: ev.error };
+        if (ev.status === 'error') s.expanded = true;
+        if (ev.stage === 4) {
+          s.expanded = false;
+          state.twinActive = false;
+          stopTwinViz();
+          topoSnapshot = null;
+          fetchTopology();
+        }
+        renderStage(ev.stage - 1);
+        renderPipelineProgress();
+      };
+
+      const ranAt = _stageRunningAt[ev.stage];
+      if (ranAt) {
+        const waited = Date.now() - ranAt;
+        const delay  = Math.max(0, MIN_STAGE_VISIBLE_MS - waited);
+        if (delay > 0) setTimeout(applyFinal, delay);
+        else applyFinal();
       } else {
-        state.twinActive = false;
-        stopTwinViz();
-        // twin 종료 후 즉시 실제 토폴로지로 복원
-        topoSnapshot = null;
-        fetchTopology();
+        // running 이벤트 없이 바로 종료 (skip 등): 카드 진입 애니메이션만 기다림
+        setTimeout(applyFinal, 120);
       }
     }
-    renderStage(ev.stage - 1);
   } else if (ev.type === 'twin_info') {
     onTwinInfo(ev);
   } else if (ev.type === 'twin_bw') {
@@ -536,19 +656,93 @@ async function loadHistory() {
 
 // ── Rendering ─────────────────────────────────────────────────────────────────
 
+const PP_LABELS = ['NLP', 'Flow', 'Validate', 'Twin', 'XAI', 'Deploy'];
+
+function renderPipelineProgress() {
+  const el       = document.getElementById('pipeline-progress');
+  const track    = document.getElementById('pp-track');
+  const steps    = document.getElementById('pp-steps');
+  const nameEl   = document.getElementById('pp-stage-name');
+  const counterEl = document.getElementById('pp-counter');
+  const pctEl    = document.getElementById('pp-pct');
+
+  const anyActive = state.stages.some(s => s.status !== 'idle');
+  if (!anyActive) { el.style.display = 'none'; return; }
+  el.style.display = 'block';
+
+  const running   = state.stages.find(s => s.status === 'running');
+  const doneCount = state.stages.filter(s => ['done', 'skipped', 'error'].includes(s.status)).length;
+  const total     = state.stages.length;
+  const pctVal    = Math.round(doneCount / total * 100);
+
+  if (running) {
+    nameEl.textContent = running.name.replace(/^[①②③④⑤⑥]\s*/, '');
+    nameEl.style.color = '#60a5fa';
+  } else {
+    const last = [...state.stages].reverse().find(s => s.status !== 'idle');
+    if (last) {
+      if (last.status === 'error') {
+        nameEl.textContent = '✕ ' + last.name.replace(/^[①②③④⑤⑥]\s*/, '');
+        nameEl.style.color = '#ef4444';
+      } else if (doneCount === total) {
+        nameEl.textContent = '✓ Pipeline Complete';
+        nameEl.style.color = '#10b981';
+      } else {
+        nameEl.textContent = last.name.replace(/^[①②③④⑤⑥]\s*/, '');
+        nameEl.style.color = '#9ca3af';
+      }
+    }
+  }
+
+  counterEl.textContent = `${doneCount} / ${total}`;
+  pctEl.textContent = ` · ${pctVal}%`;
+
+  // Rebuild segments (only replace content if changed to avoid restarting CSS animation)
+  const segs  = track.querySelectorAll('.pp-seg');
+  const stps  = steps.querySelectorAll('.pp-step');
+  state.stages.forEach((s, i) => {
+    const segClass  = `pp-seg${s.status !== 'idle' ? ' seg-' + s.status : ''}`;
+    const stepClass = `pp-step${s.status !== 'idle' ? ' step-' + s.status : ''}`;
+    if (segs[i]) {
+      segs[i].className = segClass;
+    } else {
+      const seg = document.createElement('div');
+      seg.className = segClass;
+      track.appendChild(seg);
+    }
+    if (stps[i]) {
+      stps[i].className = stepClass;
+    } else {
+      const step = document.createElement('div');
+      step.className = stepClass;
+      step.textContent = PP_LABELS[i] || s.num;
+      steps.appendChild(step);
+    }
+  });
+}
+
 function buildStageCards() {
   const section = document.getElementById('stages-section');
-  const cards = Array.from(section.querySelectorAll('.stage-card'));
+  const ppEl    = document.getElementById('pipeline-progress');
+  const cards   = Array.from(section.querySelectorAll('.stage-card'));
   if (cards.length === 0) {
     section.style.display = 'none';
+    ppEl.style.display = 'none';
     return;
   }
-  // 기존 카드 fade-out 후 제거
+  // 기존 카드 + progress bar fade-out 후 제거
+  ppEl.style.opacity = '0';
+  ppEl.style.transition = 'opacity 0.3s ease';
   cards.forEach(card => card.classList.add('stage-card-exit'));
   setTimeout(() => {
     section.innerHTML = '';
     section.style.display = 'none';
-  }, 320); // transition 0.3s + 여유
+    ppEl.style.display = 'none';
+    ppEl.style.opacity = '';
+    ppEl.style.transition = '';
+    document.getElementById('pp-track').innerHTML = '';
+    document.getElementById('pp-steps').innerHTML = '';
+  }, 350);
 }
 
 function ensureStageCard(stageNum) {
@@ -581,8 +775,8 @@ function ensureStageCard(stageNum) {
   });
   section.style.display = 'flex';
   section.appendChild(card);
-  // Trigger animation
-  requestAnimationFrame(() => card.classList.remove('stage-card-enter'));
+  // Double RAF: first frame paints opacity:0/translateY(12px), second triggers CSS transition
+  requestAnimationFrame(() => requestAnimationFrame(() => card.classList.remove('stage-card-enter')));
 }
 
 function renderAllStages() {
@@ -643,10 +837,209 @@ function renderStage(i) {
   // Detail (클릭 확장)
   if (s.expanded && s.result) {
     detail.className = 'stage-detail open';
-    detail.textContent = JSON.stringify(s.result, null, 2);
+    detail.innerHTML = renderStageDetail(s);
   } else {
     detail.className = 'stage-detail';
+    detail.innerHTML = '';
   }
+}
+
+// ── Stage Detail Renderers ────────────────────────────────────────────────────
+
+function renderStageDetail(s) {
+  const r = s.result;
+  if (!r) return '';
+  if (r.error) return `<div class="sd-section"><span class="sd-badge sd-badge-error">Error</span><div class="sd-reason">${escHtml(String(r.error))}</div></div>`;
+  try {
+    switch (s.num) {
+      case 1: return renderSD1(r);
+      case 2: return renderSD2(r);
+      case 3: return renderSD3(r);
+      case 4: return renderSD4(r);
+      case 5: return renderSD5(r);
+      case 6: return renderSD6(r);
+      default: return `<pre style="font-size:11px;color:#9ca3af;white-space:pre-wrap">${escHtml(JSON.stringify(r, null, 2))}</pre>`;
+    }
+  } catch(e) {
+    return `<pre style="font-size:11px;color:#9ca3af;white-space:pre-wrap">${escHtml(JSON.stringify(r, null, 2))}</pre>`;
+  }
+}
+
+/* Stage 1 — Intent Parsing */
+function renderSD1(r) {
+  if (r.status === 'rejected') {
+    return `<div class="sd-section">
+      <span class="sd-badge sd-badge-error">Rejected</span>
+      <div class="sd-reason">${escHtml(r.rejection_reason || '')}${r.rejection_detail ? '<br><span style="color:#6b7280">' + escHtml(r.rejection_detail) + '</span>' : ''}</div>
+    </div>`;
+  }
+  const compound = r.compound;
+  const ir = r.program;
+  if (compound) {
+    const rules = compound.rules || [];
+    return `<div class="sd-section"><span class="sd-badge sd-badge-info">Compound Intent</span>${compound.description ? `<div class="sd-desc">${escHtml(compound.description)}</div>` : ''}</div>` +
+      rules.map((rule, i) => `<div class="sd-section"><div class="sd-label">Sub-rule ${i + 1} — ${(rule.action || '').toUpperCase()}</div>${irTable(rule)}</div>`).join('');
+  }
+  if (ir) {
+    const cls = ir.action === 'block' ? 'sd-badge-block' : ir.action === 'forward' ? 'sd-badge-forward' : 'sd-badge-info';
+    return `<div class="sd-section"><span class="sd-badge ${cls}">${(ir.action || 'INTENT').toUpperCase()}</span></div>
+      <div class="sd-section">${irTable(ir)}</div>`;
+  }
+  return `<div class="sd-section"><span class="sd-badge sd-badge-ok">Accepted</span></div>`;
+}
+
+function irTable(ir) {
+  const rows = [
+    ['Action', ir.action], ['Intent Type', ir.intent_type],
+    ['Device', ir.device_hint], ['Src IP', ir.src_ip], ['Dst IP', ir.dst_ip],
+    ['Protocol', ir.ip_proto ?? ir.eth_type], ['Src Port', ir.src_port],
+    ['Dst Port', ir.dst_port], ['In Port', ir.in_port], ['Out Port', ir.out_port],
+    ['Alt Port', ir.alt_out_port], ['Priority', ir.priority],
+    ['Waypoints', Array.isArray(ir.waypoints) ? ir.waypoints.join(' → ') : ir.waypoints],
+  ].filter(([, v]) => v != null && v !== '');
+  return `<table class="sd-table">${rows.map(([k,v]) =>
+    `<tr><td class="sd-key">${k}</td><td class="sd-val">${escHtml(String(v))}</td></tr>`).join('')}</table>`;
+}
+
+/* Stage 2 — FlowRule Compile */
+function renderSD2(r) {
+  const flows = r.flows || [];
+  const action = (r.intent_action || '').toLowerCase();
+  const badgeCls = action === 'block' ? 'sd-badge-block' : action === 'compound' ? 'sd-badge-info' : 'sd-badge-forward';
+  const subRules = r.sub_rules || [];
+
+  let html = `<div class="sd-section"><span class="sd-badge ${badgeCls}">${action.toUpperCase()}</span>
+    <span class="sd-meta">${flows.length} flow rule${flows.length !== 1 ? 's' : ''}</span></div>`;
+
+  if (subRules.length) {
+    html += subRules.map((sub, si) => {
+      const subFlows = sub.flows || [];
+      return `<div class="sd-section"><div class="sd-label">Sub-rule ${si+1} — ${(sub.intent_action||'').toUpperCase()}</div>` +
+        subFlows.map((f,fi) => flowCard(f, fi)).join('') + '</div>';
+    }).join('');
+  } else {
+    html += flows.map((f, i) => flowCard(f, i)).join('');
+  }
+  return html;
+}
+
+function flowCard(f, idx) {
+  const criteria = (f.selector?.criteria || []);
+  const instructions = (f.treatment?.instructions || []);
+  const isBlock = instructions.some(i => i.type === 'NOACTION');
+  const actionStr = instructions.map(inst => {
+    if (inst.type === 'NOACTION') return '<span class="sd-action-drop">⛔ DROP</span>';
+    if (inst.type === 'OUTPUT')   return `<span class="sd-action-forward">→ Port ${escHtml(String(inst.port))}</span>`;
+    if (inst.type === 'QUEUE')    return `<span>Queue ${inst.queueId ?? ''}</span>`;
+    return `<span>${escHtml(inst.type)}</span>`;
+  }).join(' ');
+
+  const matchRows = criteria.map(c => {
+    const v = c.ip ?? c.ethType ?? c.tcpPort ?? c.udpPort ?? c.port ?? c.protocol ?? '';
+    return `<tr><td class="sd-key">${c.type.replace(/_/g,' ')}</td><td class="sd-val">${escHtml(String(v))}</td></tr>`;
+  }).join('');
+
+  const devShort = (f.deviceId || '').replace('of:000000000000', 's');
+  return `<div class="sd-flow-card">
+    <div class="sd-flow-header">
+      <span class="sd-flow-title">Rule ${idx + 1}</span>
+      <span class="sd-flow-device">${escHtml(devShort)} · Pri ${f.priority ?? '—'}</span>
+    </div>
+    <div class="sd-flow-body">
+      <div class="sd-match-col">
+        <div class="sd-sublabel">Match</div>
+        <table class="sd-table">${matchRows || '<tr><td class="sd-key" colspan="2" style="color:#4b5563">any</td></tr>'}</table>
+      </div>
+      <div class="sd-action-col">
+        <div class="sd-sublabel">Action</div>
+        <div class="sd-action-str">${actionStr}</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+/* Stage 3 — Static Validation */
+function renderSD3(r) {
+  const passed = r.passed;
+  const errors = r.schema_errors || [];
+  const conflicts = r.conflicts || [];
+  const warnings = r.warnings || [];
+
+  let html = `<div class="sd-section"><span class="sd-badge ${passed ? 'sd-badge-ok' : 'sd-badge-error'}">${passed ? '✓ Passed' : '✗ Failed'}</span></div>`;
+  if (errors.length) html += `<div class="sd-section"><div class="sd-label">Schema Errors</div>${errors.map(e => `<div class="sd-error-item">${escHtml(e)}</div>`).join('')}</div>`;
+  if (conflicts.length) html += `<div class="sd-section"><div class="sd-label">Conflicts</div>
+    <table class="sd-table"><tr><th>Type</th><th>Reason</th></tr>${conflicts.map(c =>
+      `<tr><td class="sd-key">${escHtml(c.conflict_type||'')}</td><td class="sd-val">${escHtml(c.reason||'')}</td></tr>`).join('')}</table></div>`;
+  if (warnings.length) html += `<div class="sd-section"><div class="sd-label">Warnings</div>${warnings.map(w => `<div class="sd-warn-item">⚠ ${escHtml(w)}</div>`).join('')}</div>`;
+  if (!errors.length && !conflicts.length && !warnings.length) html += `<div class="sd-section"><div class="sd-ok-msg">✓ No schema errors, conflicts, or warnings found.</div></div>`;
+  return html;
+}
+
+/* Stage 4 — Digital Twin */
+function renderSD4(r) {
+  const stCls = r.status === 'passed' ? 'sd-badge-ok' : r.status === 'skipped' ? 'sd-badge-skip' : 'sd-badge-error';
+  const checks = r.checks || {};
+  const evidence = r.evidence || {};
+
+  const checkRows = Object.entries(checks).map(([name, ok]) => {
+    const label = name.replace(/_/g,' ').replace(/\b\w/g, c => c.toUpperCase());
+    return `<div class="sd-check-row">
+      <span class="sd-check-icon" style="color:${ok?'#10b981':'#ef4444'}">${ok?'✓':'✗'}</span>
+      <span class="sd-check-name">${escHtml(label)}</span>
+      <span class="sd-check-status ${ok?'check-pass':'check-fail'}">${ok?'PASS':'FAIL'}</span>
+    </div>`;
+  }).join('');
+
+  const evidRows = Object.entries(evidence).filter(([,v]) => v != null).map(([k,v]) =>
+    `<tr><td class="sd-key">${k.replace(/_/g,' ')}</td><td class="sd-val">${escHtml(String(v))}</td></tr>`).join('');
+
+  return `<div class="sd-section"><span class="sd-badge ${stCls}">${(r.status||'—').toUpperCase()}</span>${r.reason ? `<div class="sd-reason">${escHtml(r.reason)}</div>` : ''}</div>` +
+    (checkRows ? `<div class="sd-section"><div class="sd-label">Verification Checks</div><div class="sd-checks">${checkRows}</div></div>` : '') +
+    (evidRows  ? `<div class="sd-section"><div class="sd-label">Evidence</div><table class="sd-table">${evidRows}</table></div>` : '');
+}
+
+/* Stage 5 — XAI Explanation */
+function renderSD5(r) {
+  const isApprove = (r.decision || '').includes('APPROVE');
+  const conf = r.confidence != null ? Math.round(r.confidence * 100) : null;
+  const confColor = conf >= 80 ? '#10b981' : conf >= 50 ? '#f59e0b' : '#ef4444';
+  const breakdown = r.confidence_breakdown || {};
+  const evidence = r.evidence || [];
+
+  const bdRows = Object.entries(breakdown).map(([stage, score]) => {
+    const pct = Math.round(score * 100);
+    const col = pct >= 80 ? '#10b981' : pct >= 50 ? '#f59e0b' : '#ef4444';
+    return `<div class="sd-conf-row">
+      <span class="sd-conf-label">${escHtml(stage)}</span>
+      <div class="sd-conf-bar-wrap"><div class="sd-conf-bar-fill" style="width:${pct}%;background:${col}"></div></div>
+      <span class="sd-conf-pct" style="color:${col}">${pct}%</span>
+    </div>`;
+  }).join('');
+
+  const evItems = evidence.map(e => `<div class="sd-evidence-item">
+    <span class="sd-ev-stage">${escHtml(e.stage||'')}</span>
+    <span class="sd-ev-finding">${escHtml(e.finding||'')}</span>
+  </div>`).join('');
+
+  return `<div class="sd-section"><span class="sd-badge ${isApprove ? 'sd-badge-ok' : 'sd-badge-error'}">${escHtml(r.decision||'')}</span>${r.decision_reason ? `<div class="sd-reason">${escHtml(r.decision_reason)}</div>` : ''}</div>` +
+    (conf != null ? `<div class="sd-section"><div class="sd-label">Overall Confidence</div>
+      <div class="sd-conf-overall"><div class="sd-conf-bar-wrap large"><div class="sd-conf-bar-fill" style="width:${conf}%;background:${confColor}"></div></div>
+      <span class="sd-conf-pct large" style="color:${confColor}">${conf}%</span></div></div>` : '') +
+    (bdRows ? `<div class="sd-section"><div class="sd-label">Stage Breakdown</div>${bdRows}</div>` : '') +
+    (evItems ? `<div class="sd-section"><div class="sd-label">Evidence</div>${evItems}</div>` : '') +
+    (r.ir_summary ? `<div class="sd-section"><div class="sd-label">Intent Summary</div><div class="sd-summary">${escHtml(r.ir_summary)}</div></div>` : '') +
+    (r.twin_summary ? `<div class="sd-section"><div class="sd-label">Twin Summary</div><div class="sd-summary">${escHtml(r.twin_summary)}</div></div>` : '');
+}
+
+/* Stage 6 — ONOS Deploy */
+function renderSD6(r) {
+  const ok = r.success;
+  const flowIds = r.flow_ids || [];
+
+  return `<div class="sd-section"><span class="sd-badge ${ok ? 'sd-badge-ok' : 'sd-badge-error'}">${ok ? '✓ Deployed' : '✗ Failed'}</span></div>` +
+    (r.error ? `<div class="sd-section"><div class="sd-error-item">${escHtml(r.error)}</div></div>` : '') +
+    (flowIds.length ? `<div class="sd-section"><div class="sd-label">${flowIds.length} Flow Rule${flowIds.length > 1 ? 's' : ''} Installed</div>${flowIds.map(id => `<div class="sd-flow-id">${escHtml(String(id))}</div>`).join('')}</div>` : '') +
+    (!flowIds.length && ok ? `<div class="sd-section"><div class="sd-ok-msg">✓ Rules applied successfully.</div></div>` : '');
 }
 
 function renderConfidenceBadges() {
@@ -789,7 +1182,7 @@ let currentTopoLinks = []; // snapshot for twin viz (source, target as string ID
 let twinVizInfoList = []; // [{ srcNode, dstNode, blockNode, action }, ...]
 let twinVizPhase   = 'idle';
 let twinAnimTimers = [];
-let bwLabelsVisible = true; // 대역폭 레이블 표시 여부
+let bwLabelsVisible = false; // 대역폭 레이블 표시 여부
 
 // ── Topology Editor State ─────────────────────────────────────────────────────
 
@@ -1477,7 +1870,7 @@ function updateExampleChips(topo) {
     item.addEventListener('click', e => {
       e.stopPropagation();
       menu.classList.remove('open');
-      fillIntent(c.i, c.k);
+      fillIntent(c.i);
     });
     menu.appendChild(item);
   });
@@ -1716,22 +2109,9 @@ function appendLogLine(stageNum, msg) {
   el.scrollTop = el.scrollHeight;
 }
 
-function fillIntent(text, kr) {
+function fillIntent(text) {
   state.intent = text;
   document.getElementById('intent-input').value = text;
-  if (kr) showIntentTranslation(kr);
-  else hideIntentTranslation();
-}
-
-function showIntentTranslation(kr) {
-  const el = document.getElementById('intent-translation');
-  el.innerHTML = `<div class="kr-label">한국어 설명</div>${escHtml(kr)}`;
-  el.classList.add('visible');
-}
-
-function hideIntentTranslation() {
-  const el = document.getElementById('intent-translation');
-  if (el) el.classList.remove('visible');
 }
 
 function setRunBtn(running) {
@@ -1890,9 +2270,9 @@ function findTopoPath(fromId, toId) {
 }
 
 function getTwinLayer() {
-  if (!topoSvg) return null;
-  let layer = topoSvg.select('.twin-viz');
-  if (layer.empty()) layer = topoSvg.append('g').attr('class', 'twin-viz');
+  if (!topoZoomLayer) return null;
+  let layer = topoZoomLayer.select('.twin-viz');
+  if (layer.empty()) layer = topoZoomLayer.append('g').attr('class', 'twin-viz');
   return layer;
 }
 
@@ -1966,24 +2346,31 @@ function renderTwinHighlights() {
 }
 
 function spawnPacket(layer, pathIds, color, durationMs, stopIdx) {
-  const positions = pathIds.map(id => nodePositions.get(id)).filter(Boolean);
-  if (positions.length < 2) return;
-  const endIdx = (stopIdx !== undefined) ? Math.min(stopIdx, positions.length - 1) : positions.length - 1;
-  const segMs  = durationMs / (positions.length - 1);
+  const initialPositions = pathIds.map(id => nodePositions.get(id)).filter(Boolean);
+  if (initialPositions.length < 2) return;
+  const endIdx = (stopIdx !== undefined) ? Math.min(stopIdx, initialPositions.length - 1) : initialPositions.length - 1;
+  const segMs  = durationMs / (initialPositions.length - 1);
 
   const dot = layer.append('circle')
     .attr('r', 4.5).attr('fill', color).attr('opacity', 0.92)
-    .attr('cx', positions[0].x).attr('cy', positions[0].y)
+    .attr('cx', initialPositions[0].x).attr('cy', initialPositions[0].y)
     .attr('pointer-events', 'none');
 
   let t = dot.transition().duration(0);
   for (let i = 1; i <= endIdx; i++) {
-    const p = positions[i];
+    const fromId = pathIds[i - 1];
+    const toId   = pathIds[i];
     t = t.transition().duration(segMs).ease(d3.easeLinear)
-         .attr('cx', p.x).attr('cy', p.y);
+         .tween('pos', () => (tv) => {
+           const from = nodePositions.get(fromId);
+           const to   = nodePositions.get(toId);
+           if (!from || !to) return;
+           dot.attr('cx', from.x + (to.x - from.x) * tv)
+              .attr('cy', from.y + (to.y - from.y) * tv);
+         });
   }
 
-  if (stopIdx !== undefined && stopIdx < positions.length - 1) {
+  if (stopIdx !== undefined && stopIdx < initialPositions.length - 1) {
     // Blocked: burst and vanish
     t.transition().duration(250).attr('r', 9).attr('opacity', 0).remove();
   } else {
@@ -2069,7 +2456,6 @@ function init() {
   const intentInput = document.getElementById('intent-input');
   intentInput.addEventListener('input', e => {
     state.intent = e.target.value;
-    hideIntentTranslation();
   });
 
   // Run button
@@ -2269,7 +2655,7 @@ function initIntentPresets() {
     item.addEventListener('click', e => {
       e.stopPropagation();
       menu.classList.remove('open');
-      fillIntent(item.dataset.intent, item.dataset.kr);
+      fillIntent(item.dataset.intent);
     });
   });
 }

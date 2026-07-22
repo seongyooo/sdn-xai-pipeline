@@ -177,6 +177,7 @@ class TwinVerifier:
         from stage4_twin.topology import (
             build_network, build_network_from_custom,
             get_expected_device_ids, get_test_host_pairs,
+            suppress_htb_quantum_warning,
             EXPECTED_DEVICE_IDS,
         )
 
@@ -302,15 +303,16 @@ class TwinVerifier:
                 timeout=15,
             )
 
-            if custom_data:
-                sw_cnt = len(custom_data.get("switches", []))
-                h_cnt  = len(custom_data.get("hosts", []))
-                self._log(f"④ Mininet 가상 네트워크 시작 중... (커스텀 토폴로지 {sw_cnt}SW/{h_cnt}H)")
-                net = build_network_from_custom(custom_data, self.controller_ip, self.controller_port)
-            else:
-                self._log("④ Mininet 가상 네트워크 시작 중... (다이아몬드 기본 토폴로지)")
-                net = build_network(self.controller_ip, self.controller_port)
-            net.start()
+            with suppress_htb_quantum_warning():
+                if custom_data:
+                    sw_cnt = len(custom_data.get("switches", []))
+                    h_cnt  = len(custom_data.get("hosts", []))
+                    self._log(f"④ Mininet 가상 네트워크 시작 중... (커스텀 토폴로지 {sw_cnt}SW/{h_cnt}H)")
+                    net = build_network_from_custom(custom_data, self.controller_ip, self.controller_port)
+                else:
+                    self._log("④ Mininet 가상 네트워크 시작 중... (다이아몬드 기본 토폴로지)")
+                    net = build_network(self.controller_ip, self.controller_port)
+                net.start()
 
             self._log("④ ONOS에 가상 스위치 연결 대기 중... (Live Topology에 가상 스위치가 표시됩니다)")
             client.wait_for_devices(expected_ids, timeout=90.0)

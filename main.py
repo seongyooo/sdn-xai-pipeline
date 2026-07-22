@@ -50,23 +50,7 @@ def _print_footer(decision: str, log_path: Path) -> None:
     print("=" * 60)
 
 
-MAX_REPAIR_ATTEMPTS = 3
-
-
-def _build_repair_feedback(static_result, attempt: int, max_attempts: int) -> str:
-    lines = [
-        f"[Repair attempt {attempt}/{max_attempts} — previous output was rejected by static validation]"
-    ]
-    if static_result.schema_errors:
-        lines.append("Schema errors:")
-        for e in static_result.schema_errors:
-            lines.append(f"  - {e}")
-    if static_result.conflicts:
-        lines.append("Conflicts:")
-        for c in static_result.conflicts:
-            lines.append(f"  - [{c.get('conflict_type', '?')}] {c.get('reason', '')}")
-    lines.append("Please revise the intent representation to fix these issues.")
-    return "\n".join(lines)
+from repair_utils import MAX_REPAIR_ATTEMPTS, build_repair_feedback as _build_repair_feedback
 
 
 def main() -> int:
@@ -122,20 +106,32 @@ def main() -> int:
             try:
                 print("  RAG 인덱스 구축 중...")
                 rag_index, rag_texts, rag_outputs = build_index(config.DATASET_PATH, client)
+            except (ImportError, RuntimeError) as exc:
+                print(f"  RAG 스킵 (의존성 누락: {exc})")
+            except ValueError as exc:
+                print(f"  RAG 스킵 (데이터셋 형식 오류: {exc})")
             except Exception as exc:
-                print(f"  RAG 스킵 (인덱스 구축 실패: {exc})")
+                print(f"  RAG 스킵 (임베딩 오류: {exc})")
         elif args.no_rag:
             print("  RAG 스킵 (--no-rag 플래그)")
 
-        # 토폴로지 그라운딩 — ONOS 연결 가능 시 실시간 조회, 실패 시 정적 다이아몬드
+        # 토폴로지 그라운딩 — 커스텀 파일 우선, ONOS 폴백, 정적 다이아몬드 최종 폴백
+        import json as _json
         from models.topology import NetworkTopology
-        try:
-            from stage4_twin.onos_client import OnosClient
-            topology = NetworkTopology.from_onos(OnosClient())
-            print("  토폴로지: ONOS 실시간 조회")
-        except Exception:
-            topology = NetworkTopology.diamond()
-            print("  토폴로지: 정적 다이아몬드 (ONOS 연결 없음)")
+        _custom_topo_path = _BASE_DIR / "data" / "custom_topology.json"
+        if _custom_topo_path.exists():
+            topology = NetworkTopology.from_custom_file(
+                _json.loads(_custom_topo_path.read_text(encoding="utf-8"))
+            )
+            print("  토폴로지: 커스텀 파일 로드")
+        else:
+            try:
+                from stage4_twin.onos_client import OnosClient
+                topology = NetworkTopology.from_onos(OnosClient())
+                print("  토폴로지: ONOS 실시간 조회")
+            except Exception:
+                topology = NetworkTopology.diamond()
+                print("  토폴로지: 정적 다이아몬드 (ONOS 연결 없음)")
 
         parser_obj = IntentParser(
             client=client,
@@ -307,9 +303,11 @@ def main() -> int:
         from stage4_twin.twin_verifier import TwinResult
         twin_result = TwinResult(
             status="skipped",
-            reason="--skip-twin 플래그로 스킵",
+            reason="--skip-twin flag",
         )
-        print(f"  (skipped: --skip-twin 플래그)")
+        print("  (skipped: --skip-twin 플래그)")
+        print("  ⚠ 경고: Digital Twin 검증 없이 진행합니다. "
+              "최종 결정은 APPROVE_WITHOUT_TWIN으로 격하될 수 있습니다.")
     else:
         try:
             from stage4_twin.twin_verifier import TwinVerifier
