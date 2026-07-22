@@ -190,12 +190,8 @@ class TwinVerifier:
         expected_ids = get_expected_device_ids(custom_data)
         primary_pair, regression_pair = get_test_host_pairs(custom_data)
 
-        # SFC 인텐트: waypoint 경유 테스트는 실제 방화벽 장치 없이 검증 불가 → skip
-        if flowrule.get("sfc_chain"):
-            return TwinResult(
-                status="skipped",
-                reason="SFC 인텐트는 Digital Twin에서 waypoint 장치 없이 검증 불가",
-            )
+        # SFC 인텐트: 데이터플레인(middlebox 없음) 대신 OVS 제어플레인 검증으로 대체
+        is_sfc = bool(flowrule.get("sfc_chain")) or flowrule.get("intent_action") == "sfc"
 
         flows = flowrule.get("flows", [])
 
@@ -412,31 +408,66 @@ class TwinVerifier:
                                 time.sleep(1)
 
                 # ── 6b. intent 동작 확인 ───────────────────────────────
-                # block만 차단 확인, 나머지(forward/qos/reroute)는 도달 확인
-                expect_reach = (spec_action != "block")
-                step_label   = f"⑦ [intent_{spec_idx}]" if len(intent_specs) > 1 else "⑦ [intent]"
-                if spec_proto in ("tcp", "udp") and spec_port is not None:
-                    proto_label = f"{spec_proto.upper()}/{spec_port}"
-                    self._log(
-                        f"{step_label} {'전달 확인' if expect_reach else '차단 확인'}: "
-                        f"{spec_src_host} → {spec_dst_ip_resolved}:{proto_label}"
+                step_label = f"⑦ [intent_{spec_idx}]" if len(intent_specs) > 1 else "⑦ [intent]"
+
+                if spec_action == "sfc" or (is_sfc and spec_idx == 0):
+                    # SFC: Mininet에 실제 middlebox 없음 → OVS 제어플레인 검증
+                    # ingress flow(flows[0])와 egress flow(flows[1]) 모두 egress_port_check에서 확인됨
+                    ep_key_0 = "egress_port" if len(flows) == 1 else "egress_port_0"
+                    ep_key_1 = "egress_port_1"
+                    ingress_ok = checks.get(ep_key_0, False)
+                    egress_ok  = checks.get(ep_key_1, True)  # egress flow 없으면 무시
+                    intent_ok  = ingress_ok and egress_ok
+                    intent_msg = (
+                        "SFC 제어플레인 검증: ingress(→waypoint) + egress(waypoint→dst) "
+                        "FlowRule OVS 설치 확인"
+                        if intent_ok else
+                        "SFC 제어플레인 검증 실패: OVS에 ingress/egress rule 미설치"
                     )
-                    intent_ok, intent_msg = self._port_check(
-                        net, spec_src_host, spec_dst_ip_resolved,
-                        proto=spec_proto, port=spec_port,
-                        expect_reach=expect_reach,
-                    )
+                    self._log(f"{step_label} [sfc] 제어플레인 검증 (OVS ingress+egress rule)")
+                    self._log(f"   ↳ 데이터플레인은 실제 middlebox 없이 검증 불가 — 제어플레인으로 대체")
+                    self._log(f"   {'✓' if intent_ok else '✗'} {intent_msg}")
+
                 else:
-                    self._log(
-                        f"{step_label} {'전달 확인' if expect_reach else '차단 확인'}: "
-                        f"{spec_src_host} → {spec_dst_ip_resolved} (ICMP)"
-                    )
-                    intent_ok, intent_msg = self._ping_check(
-                        net, spec_src_host, spec_dst_ip_resolved, expect_reach=expect_reach
-                    )
+                    # block만 차단 확인, 나머지(forward/qos/reroute)는 도달 확인
+                    expect_reach = (spec_action != "block")
+                    if spec_proto in ("tcp", "udp") and spec_port is not None:
+                        proto_label = f"{spec_proto.upper()}/{spec_port}"
+                        self._log(
+                            f"{step_label} {'전달 확인' if expect_reach else '차단 확인'}: "
+                            f"{spec_src_host} → {spec_dst_ip_resolved}:{proto_label}"
+                        )
+                        intent_ok, intent_msg = self._port_check(
+                            net, spec_src_host, spec_dst_ip_resolved,
+                            proto=spec_proto, port=spec_port,
+                            expect_reach=expect_reach,
+                        )
+                    else:
+                        self._log(
+                            f"{step_label} {'전달 확인' if expect_reach else '차단 확인'}: "
+                            f"{spec_src_host} → {spec_dst_ip_resolved} (ICMP)"
+                        )
+                        intent_ok, intent_msg = self._ping_check(
+                            net, spec_src_host, spec_dst_ip_resolved, expect_reach=expect_reach
+                        )
+                    self._log(f"   {'✓' if intent_ok else '✗'} {intent_msg}")
+
                 checks[check_key] = intent_ok
                 evidence[msg_key]  = intent_msg
-                self._log(f"   {'✓' if intent_ok else '✗'} {intent_msg}")
+
+                # ── 6c. iperf 대역폭 측정 (forward/qos/reroute 전달 성공 시) ──
+                if spec_action in ("forward", "qos", "reroute") and intent_ok:
+                    bw_key = "bandwidth" if len(intent_specs) == 1 else f"bandwidth_{spec_idx}"
+                    spec_dst_host_name = ip_to_host.get(spec_dst_ip_resolved or "", primary_pair[1])
+                    self._log(
+                        f"   ↳ iperf3 대역폭 측정: {spec_src_host} → {spec_dst_ip_resolved}"
+                    )
+                    bw_mbps, bw_msg = self._iperf_check(
+                        net, spec_src_host, spec_dst_host_name, spec_dst_ip_resolved
+                    )
+                    evidence[f"{bw_key}_mbps"] = bw_mbps
+                    evidence[f"{bw_key}_msg"]  = bw_msg
+                    self._log(f"   ↳ {bw_msg}")
 
                 # ── 6c. 스티어링 룰 제거 ──────────────────────────────
                 for hop in steered_switches:
@@ -716,6 +747,87 @@ class TwinVerifier:
 
         except Exception as exc:
             return False, f"OVS egress port 확인 오류: {exc}"
+
+    def _iperf_check(
+        self,
+        net,
+        src_host: str,
+        dst_host: str,
+        dst_ip: str,
+        duration: int = 3,
+    ) -> tuple[float, str]:
+        """
+        iperf3 (없으면 iperf)로 대역폭을 측정한다.
+        pass/fail 판정이 아닌 보조 측정값으로 evidence에 기록된다.
+
+        Args:
+            net:       Mininet 객체
+            src_host:  소스 호스트 이름 (예: "h1")
+            dst_host:  대상 호스트 이름 (예: "h4") — iperf 서버 실행용
+            dst_ip:    대상 IP 주소
+            duration:  측정 시간 (초, 기본 3)
+
+        Returns:
+            (대역폭 Mbps, 설명 메시지)
+            대역폭 -1.0 → iperf 미설치 또는 측정 실패
+        """
+        try:
+            if not re.match(r"^[\d.]+$", dst_ip):
+                return -1.0, f"잘못된 IP 형식: {dst_ip}"
+
+            src_node = net.get(src_host)
+            dst_node = net.get(dst_host)
+            if src_node is None or dst_node is None:
+                return -1.0, "호스트를 찾을 수 없음"
+
+            # ── iperf3 시도 ──────────────────────────────
+            # 서버 시작 (백그라운드, 1회 연결 후 종료)
+            dst_node.cmd("pkill iperf3 2>/dev/null; sleep 0.2")
+            dst_node.cmd(f"iperf3 -s -1 >/dev/null 2>&1 &")
+            time.sleep(0.8)
+
+            src_node.sendCmd(
+                f"iperf3 -c {dst_ip} -t {duration} --connect-timeout 3000 2>&1"
+            )
+            result = src_node.waitOutput(timeout=duration + 8)
+
+            # iperf3 JSON 없이 텍스트 파싱
+            m = re.search(r"(\d+\.?\d*)\s+(Gbits|Mbits|Kbits)/sec\s+(?:receiver|sender)", result)
+            if not m:
+                m = re.search(r"(\d+\.?\d*)\s+(Gbits|Mbits|Kbits)/sec", result)
+            if m:
+                val, unit = float(m.group(1)), m.group(2)
+                bw_mbps = val * 1000 if unit == "Gbits" else val / 1000 if unit == "Kbits" else val
+                bw_mbps = round(bw_mbps, 2)
+                return bw_mbps, f"{src_host}→{dst_ip} 대역폭: {bw_mbps} Mbps (iperf3)"
+
+            # iperf3 미설치 or 실패 → iperf(v2) 시도
+            if "command not found" in result or "No such file" in result or not result.strip():
+                dst_node.cmd("pkill iperf 2>/dev/null; sleep 0.2")
+                dst_node.cmd(f"iperf -s >/dev/null 2>&1 &")
+                time.sleep(0.8)
+
+                src_node.sendCmd(f"iperf -c {dst_ip} -t {duration} 2>&1")
+                result2 = src_node.waitOutput(timeout=duration + 8)
+                dst_node.cmd("pkill iperf 2>/dev/null")
+
+                m2 = re.search(r"(\d+\.?\d*)\s+(Gbits|Mbits|Kbits)/sec", result2)
+                if m2:
+                    val, unit = float(m2.group(1)), m2.group(2)
+                    bw_mbps = val * 1000 if unit == "Gbits" else val / 1000 if unit == "Kbits" else val
+                    bw_mbps = round(bw_mbps, 2)
+                    return bw_mbps, f"{src_host}→{dst_ip} 대역폭: {bw_mbps} Mbps (iperf)"
+
+                if "command not found" in result2 or "No such file" in result2:
+                    return -1.0, "iperf/iperf3 미설치 — 대역폭 측정 스킵"
+
+                return -1.0, f"iperf 결과 파싱 실패: {result2[:120]}"
+
+            dst_node.cmd("pkill iperf3 2>/dev/null")
+            return -1.0, f"iperf3 결과 파싱 실패: {result[:120]}"
+
+        except Exception as exc:
+            return -1.0, f"iperf 오류: {exc}"
 
     def _load_custom_topology(self) -> Optional[dict]:
         """
