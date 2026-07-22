@@ -760,14 +760,8 @@ class TwinVerifier:
                         f"(예상: output:{expected_port})"
                     )
 
-            # ── 디버그: OVS 전체 flow 목록 출력 ────────────────
-            self._log(f"   [debug] {sw_name} OVS dump-flows:")
-            for _dl in result_clean.splitlines():
-                _dl = _dl.strip()
-                if _dl:
-                    self._log(f"     {_dl}")
-
             # ── 2차: IPV4_DST / IN_PORT 기반 fallback 탐색 ──
+            # ONOS가 OVS로 push할 때 priority를 누락하는 경우가 있으므로
             # re.escape는 정규식용 — 평문 in 체크에는 raw 문자열 사용
             if flow is not None:
                 criteria = {
