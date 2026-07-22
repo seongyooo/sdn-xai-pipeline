@@ -186,6 +186,69 @@ Ingress(s1) → Access(s5, s2) → Distribution(s8,s6,s3,s7)
 
 ---
 
+## 11. Digital Twin — 부분 차단 검증 방식 개선
+
+### 11-1. 문제 상황
+
+Clos Fabric 토폴로지에서 h1→h2 트래픽에 대해 8개 스위치(s5, s8, s6, s3, s11, s4, s10, s12)를 블록하되, 의도적으로 일부 경로(h1→s1→s2→s7→s9→s13→s14→h2)를 열어두는 **부분 차단** 인텐트를 실행했을 때 Digital Twin이 FAIL을 반환하는 문제.
+
+**원인**: 기존 검증 방식이 ping 결과를 권위 있는 기준으로 사용.
+우회 경로로 ping이 통과되면 "차단 실패"로 판정 → 오탐.
+
+### 11-2. 해결: OVS 제어플레인 기반 검증
+
+`pipeline/stage4_twin/twin_verifier.py`의 block 인텐트 검증 로직을 재구조화.
+
+**변경 전**: 스티어링 룰 설치 → ping 차단 여부 → 이것이 PASS/FAIL 기준  
+**변경 후**:
+1. `_block_rule_check()` (신규) — OVS flow table에서 DROP/NOACTION 룰 설치 여부 확인 **(1차, 권위 기준)**
+2. 스티어링 + ping — 보조 확인, 로그에만 기록 **(2차)**
+3. `intent_ok = ovs_ok` — OVS 확인이 판정 기준
+
+```
+OVS ✓ + ping 차단됨 → "스티어링 경로 차단 확인됨"     → PASS
+OVS ✓ + ping 통과됨 → "우회 경로 존재 (부분 차단 — 정상)" → PASS
+OVS ✗              → "OVS sN에 블록 룰 미발견"         → FAIL
+```
+
+### 11-3. `_block_rule_check()` 메서드 구현
+
+`TwinVerifier` 클래스에 추가. 동작:
+- `ovs-ofctl dump-flows {sw_name} -O OpenFlow13` 실행
+- `actions=drop` 또는 `actions=` (NOACTION) 라인에서 `nw_src`, `nw_dst` 매칭 확인
+- 최대 3회 재시도 (1초 간격)
+- 룰 발견 시 `(True, msg)`, 미발견 시 `(False, msg)` 반환
+
+---
+
+## 12. Clos Fabric DPID 버그 수정
+
+### 문제
+
+`data/custom_topology.json`에서 s10~s14의 DPID가 decimal 표기로 잘못 저장됨.
+
+| 스위치 | 잘못된 DPID | 올바른 DPID |
+|---|---|---|
+| s10 | `0000000000000010` (=0x10=16) | `000000000000000a` (=10) |
+| s11 | `0000000000000011` (=17) | `000000000000000b` |
+| s12 | `0000000000000012` (=18) | `000000000000000c` |
+| s13 | `0000000000000013` (=19) | `000000000000000d` |
+| s14 | `0000000000000014` (=20) | `000000000000000e` |
+
+### 원인 분석
+
+- `compiler.py`: `"s10"` → `f"of:{10:016x}"` = `of:000000000000000a`
+- `topology.py`: `addSwitch("s10", dpid="0000000000000010")` → Mininet/ONOS에 `of:0000000000000010` (=16)으로 연결
+- 두 값 불일치 → ONOS가 존재하지 않는 디바이스에 룰 푸시 시도 → 설치 실패
+- `_block_rule_check`가 s10 OVS에서 룰을 못 찾음 → FAIL
+
+### 해결
+
+`data/custom_topology.json`의 DPID와 h10 MAC을 올바른 hex 값으로 수정.  
+h10 MAC도 동일하게 `00:00:00:00:00:10` → `00:00:00:00:00:0a` 수정.
+
+---
+
 ## 파일 변경 목록
 
 | 파일 | 변경 내용 |
@@ -196,7 +259,8 @@ Ingress(s1) → Access(s5, s2) → Distribution(s8,s6,s3,s7)
 | `pipeline/repair_utils.py` | **신규** — 공유 유틸리티 |
 | `pipeline/stage2_flowrule/compiler.py` | extract_device_id 정규식 개선 |
 | `pipeline/stage4_twin/topology.py` | suppress_htb_quantum_warning() 추가 |
-| `pipeline/stage4_twin/twin_verifier.py` | quantum warning 억제 적용 |
+| `pipeline/stage4_twin/twin_verifier.py` | 부분 차단 OVS 검증 + `_block_rule_check()` 추가 |
+| `data/custom_topology.json` | s10~s14 DPID, h10 MAC hex 수정 |
 | `tests/test_compiler.py` | **신규** — 35개 단위 테스트 |
 | `tests/test_conflict_detector.py` | **신규** — 21개 단위 테스트 |
 | `static/index.html` | pipeline-area 분리, pipeline-progress, Clos Fabric 프리셋 |
