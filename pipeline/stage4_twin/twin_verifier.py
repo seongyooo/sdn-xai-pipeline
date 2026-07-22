@@ -344,7 +344,11 @@ class TwinVerifier:
                 ]
                 if not output_ports:
                     continue  # block/drop rule은 스킵
-                expected_port = int(output_ports[0])
+                try:
+                    expected_port = int(output_ports[0])
+                except (ValueError, TypeError):
+                    # "NORMAL", "CONTROLLER", "FLOOD" 등 논리 포트는 검증 불가 → 스킵
+                    continue
                 device_id = f.get("deviceId", "")
                 sw_name = _device_id_to_sw_name(device_id, custom_data)
                 priority = f.get("priority", 50000)
