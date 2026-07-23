@@ -1,8 +1,21 @@
 # Codex QA Result and End-to-End Plan
 
-> 작성일: 2026-07-16  
-> 대상: `endTOend/` 파이프라인  
+> 작성일: 2026-07-16 / 이슈 해결 현황 업데이트: 2026-07-23  
+> 대상: `endTOend/` 파이프라인 (현재는 `sdn-xai-pipeline`으로 이전)  
 > 원칙: 코드 수정 없이 현재 프로젝트 분석, QA 결과, 향후 계획만 정리
+
+## 이슈 해결 현황 요약 (2026-07-23 기준)
+
+| Issue | 제목 | 상태 |
+|-------|------|------|
+| Issue 1 | `existing_flows=None` — 충돌 탐지 비활성화 | ✅ 해결 (api.py에서 ONOS flows 조회 후 주입) |
+| Issue 2 | `s2`, `s4` 축약 스위치명 파싱 불일치 | ✅ 해결 (2026-07-20, 정규식 개선) |
+| Issue 3 | XAI에서 NOACTION을 FORWARD로 표시 | ✅ 해결 (intent_action 키 기반 분기) |
+| Issue 4 | Digital Twin skipped여도 APPROVE 가능 | ✅ 해결 (Skip/Approve 분리, skip 시 신뢰도 감산) |
+| Issue 5 | Digital Twin rollback이 운영 환경에 위험 | ⬜ 미해결 (Rollback 정책 도입 계획) |
+| Issue 6 | 통합 실험이 진정한 end-to-end 아님 | ✅ 해결 (experiments/e1 실제 파이프라인 연동) |
+
+---
 
 ---
 

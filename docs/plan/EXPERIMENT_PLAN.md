@@ -334,16 +334,19 @@ python experiments/e1/score.py \
 
 ## 10. 체크리스트
 
-- [ ] `experiment/e1-gemini` 브랜치 생성
-- [ ] `experiments/e1/` 디렉토리 구조 생성
-- [ ] `convert_dataset.py` 작성 및 테스트 (100개 변환 검증)
-- [ ] `demonstrations_pipeline.json` 변환 (5개 예시 검증)
-- [ ] `topology.json` 복사
-- [ ] 실험 전용 SYSTEM_PROMPT 작성 (src_ip 완화)
-- [ ] `run_experiment.py` 작성 (Gemini SDK, resume 지원)
-- [ ] T-B × 5 rep 실행
-- [ ] T-C × 5 rep 실행
-- [ ] T-D × 5 rep 실행
-- [ ] `score.py` 작성 및 채점
-- [ ] 결과 분석 및 `e1_pipeline_results.md` 작성
-- [ ] qwen3:8b 결과와 비교 섹션 추가
+> 완료 현황 업데이트: 2026-07-23
+
+- [x] `experiment/e1-gemini` 브랜치 생성
+- [x] `experiments/e1/` 디렉토리 구조 생성
+- [x] `convert_dataset.py` 작성 및 테스트 (100개 변환 검증)
+- [x] `demonstrations_pipeline.json` 변환 (5개 예시 검증)
+- [x] `topology.json` 복사
+- [x] 실험 전용 SYSTEM_PROMPT 작성 (src_ip 완화)
+- [x] `run_experiment.py` 작성 (Gemini SDK, resume 지원)
+- [x] T-B × 5 rep 실행
+- [x] T-C × 5 rep 실행
+- [x] T-D × 10 rep 실행 (5 rep → 10 rep으로 확대)
+- [x] `score.py` 작성 및 채점
+- [x] 결과 분석 및 `T-D_result.md` 작성 (experiments/eval/reports/)
+- [ ] T-B / T-C 결과 분석 및 비교표 작성
+- [ ] qwen3:8b(E1-D) 결과와 최종 비교 섹션 추가

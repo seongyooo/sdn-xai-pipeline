@@ -460,6 +460,9 @@ const state = {
   history: [],
   refreshIn: 1,
   twinActive: false,
+  // Flow State
+  topologyId: 'custom',          // 현재 선택된 토폴로지 ID
+  preloadedFlows: [],             // Load State로 불러온 FlowRule 목록
 };
 
 // ── Pipeline ──────────────────────────────────────────────────────────────────
@@ -490,6 +493,8 @@ async function runPipeline() {
         no_rag: !state.enableRag,
         skip_twin: state.skipTwin,
         skip_deploy: state.skipDeploy,
+        topology_id: state.topologyId,
+        preloaded_flows: state.preloadedFlows,
       }),
     });
 
@@ -2461,6 +2466,9 @@ function init() {
   // Run button
   document.getElementById('run-btn').addEventListener('click', runPipeline);
 
+  // Load State button (initial render)
+  renderLoadStateBtn();
+
   // Intent presets
   initIntentPresets();
 
@@ -2741,6 +2749,9 @@ function initTopoPresets() {
 async function applyPreset(presetName) {
   const preset = TOPOLOGY_PRESETS[presetName];
   if (!preset) return;
+  // 현재 토폴로지 ID를 프리셋 키로 업데이트
+  state.topologyId = presetName;
+  renderLoadStateBtn();
 
   const payload = {
     switches: preset.switches,
@@ -2904,6 +2915,146 @@ document.addEventListener('keydown', ev => {
       break;
   }
 });
+
+// ── Flow State ────────────────────────────────────────────────────────────────
+
+async function loadFlowState() {
+  const btn = document.getElementById('load-state-btn');
+  if (btn) { btn.textContent = '불러오는 중…'; btn.disabled = true; }
+  try {
+    const resp = await fetch(`/api/flow-state/${encodeURIComponent(state.topologyId)}`);
+    if (resp.status === 404) {
+      state.preloadedFlows = [];
+      renderLoadStateBtn();
+      renderSavedStateTab([]);
+      alert(`저장된 state 없음 (${state.topologyId})`);
+      return;
+    }
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    state.preloadedFlows = data.flows || [];
+    renderLoadStateBtn();
+    renderSavedStateTab(state.preloadedFlows, data.sync_status);
+  } catch (err) {
+    console.error('[FlowState] load failed:', err);
+    alert(`Load State 오류: ${err.message}`);
+  } finally {
+    if (btn) { btn.disabled = false; }
+    renderLoadStateBtn();
+  }
+}
+
+function clearLoadedState() {
+  state.preloadedFlows = [];
+  renderLoadStateBtn();
+  renderSavedStateTab([]);
+}
+
+async function deleteFlowStateEntry(index) {
+  try {
+    const resp = await fetch(
+      `/api/flow-state/${encodeURIComponent(state.topologyId)}/flows/${index}`,
+      { method: 'DELETE' }
+    );
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    // 로컬 state에서도 제거
+    state.preloadedFlows.splice(index, 1);
+    renderLoadStateBtn();
+    renderSavedStateTab(state.preloadedFlows);
+  } catch (err) {
+    console.error('[FlowState] delete failed:', err);
+    alert(`삭제 오류: ${err.message}`);
+  }
+}
+
+async function clearAllFlowState() {
+  if (!confirm(`'${state.topologyId}' 토폴로지의 모든 저장된 FlowRule을 삭제하시겠습니까?`)) return;
+  try {
+    const resp = await fetch(
+      `/api/flow-state/${encodeURIComponent(state.topologyId)}`,
+      { method: 'DELETE' }
+    );
+    if (!resp.ok && resp.status !== 404) throw new Error(`HTTP ${resp.status}`);
+    state.preloadedFlows = [];
+    renderLoadStateBtn();
+    renderSavedStateTab([]);
+  } catch (err) {
+    alert(`초기화 오류: ${err.message}`);
+  }
+}
+
+function renderLoadStateBtn() {
+  const btn = document.getElementById('load-state-btn');
+  const clearBtn = document.getElementById('clear-state-btn');
+  if (!btn) return;
+  const n = state.preloadedFlows.length;
+  if (n > 0) {
+    btn.textContent = `⬇ Loaded ●${n}`;
+    btn.classList.add('state-loaded');
+    if (clearBtn) clearBtn.style.display = 'inline-flex';
+  } else {
+    btn.textContent = '⬇ Load State';
+    btn.classList.remove('state-loaded');
+    if (clearBtn) clearBtn.style.display = 'none';
+  }
+}
+
+function renderSavedStateTab(flows, syncStatus) {
+  // FLOW RULES 탭 전환 — Saved State 탭 활성화
+  activateFlowTab('saved');
+
+  const body = document.getElementById('saved-state-body');
+  if (!body) return;
+
+  if (!flows || flows.length === 0) {
+    body.innerHTML = `<div style="padding:12px 10px;font-size:11px;color:#4b5563;font-family:'JetBrains Mono',monospace">저장된 state 없음</div>`;
+    return;
+  }
+
+  // sync_status 배너
+  let banner = '';
+  if (syncStatus) {
+    if (syncStatus.in_cache_not_onos > 0) {
+      banner = `<div class="sync-banner warn">⚠ ${syncStatus.in_cache_not_onos}개 rule이 ONOS에 미설치 상태</div>`;
+    } else if (syncStatus.in_onos_not_cache > 0) {
+      banner = `<div class="sync-banner info">ℹ ${syncStatus.in_onos_not_cache}개 외부 rule 감지됨</div>`;
+    }
+  }
+
+  body.innerHTML = banner + flows.map((f, i) => {
+    const criteria = (f.selector || {}).criteria || [];
+    const src = (criteria.find(c => c.type === 'IPV4_SRC') || {}).ip || '';
+    const dst = (criteria.find(c => c.type === 'IPV4_DST') || {}).ip || '';
+    const instructions = (f.treatment || {}).instructions || [];
+    const isBlock = !instructions.length || instructions.some(inst => inst.type === 'NOACTION' || inst.type === 'DROP');
+    const actionStr = isBlock ? 'DROP' : 'FORWARD';
+    const actionColor = isBlock ? '#f59e0b' : '#10b981';
+    const devShort = (f.deviceId || '').split(':').pop() || f.deviceId || '?';
+    const meta = f._meta || {};
+    const intent = meta.intent ? escHtml(meta.intent.slice(0, 40)) : '';
+    return `
+      <div class="saved-state-row">
+        <div class="flow-cell-device" title="${escHtml(f.deviceId || '')}">${escHtml(devShort.replace(/^0+/, '') || devShort)}</div>
+        <div class="flow-cell-pri">${f.priority || ''}</div>
+        <div class="flow-cell-match">${escHtml(src ? `${src}→${dst}` : dst || '—')}</div>
+        <div class="flow-cell-action" style="color:${actionColor}">
+          <span class="flow-action-dot" style="background:${actionColor}"></span>
+          ${actionStr}
+        </div>
+        ${intent ? `<div class="flow-cell-intent" title="${escHtml(meta.intent || '')}">${intent}</div>` : '<div></div>'}
+        <button class="state-del-btn" onclick="deleteFlowStateEntry(${i})" title="이 rule 삭제">✕</button>
+      </div>`;
+  }).join('');
+}
+
+function activateFlowTab(tab) {
+  const tabs = document.querySelectorAll('.flow-tab-btn');
+  tabs.forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+  const onos = document.getElementById('flow-table-section');
+  const saved = document.getElementById('saved-state-section');
+  if (onos) onos.style.display = tab === 'onos' ? '' : 'none';
+  if (saved) saved.style.display = tab === 'saved' ? '' : 'none';
+}
 
 document.addEventListener('DOMContentLoaded', init);
 window.addEventListener('resize', syncTopoSize);

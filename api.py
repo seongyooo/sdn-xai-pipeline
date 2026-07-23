@@ -62,6 +62,8 @@ class RunRequest(BaseModel):
     no_rag: bool = False
     skip_twin: bool = False
     skip_deploy: bool = False
+    preloaded_flows: list = []        # UI "Load State"로 불러온 기존 FlowRule
+    topology_id: str = ""             # 현재 선택된 토폴로지 ID (flow state 저장 키)
 
     def validate_intent(self) -> str | None:
         """입력 검증. 오류 메시지 반환, 정상이면 None."""
@@ -376,6 +378,7 @@ def _run_pipeline(req: RunRequest, q: std_queue.Queue) -> None:
                 flowrule,
                 progress_cb=lambda msg: progress(4, msg),
                 emit_cb=emit,
+                preloaded_flows=req.preloaded_flows,
             )
             if twin_result.checks:
                 progress(4, "─" * 36)
@@ -431,6 +434,7 @@ def _run_pipeline(req: RunRequest, q: std_queue.Queue) -> None:
     if decision in ("APPROVE", "APPROVE_WITHOUT_TWIN") and not req.skip_deploy:
         try:
             from stage6_deploy.deployer import Deployer
+            import flow_state_manager
 
             progress(6, "배포 전 ONOS 플로우 스냅샷 수집 중...")
             progress(6, f"FlowRule POST → {config.ONOS_URL}/flows")
@@ -438,6 +442,25 @@ def _run_pipeline(req: RunRequest, q: std_queue.Queue) -> None:
             r6 = {"success": dep.success, "flow_ids": dep.flow_ids, "error": dep.error}
             if dep.success:
                 progress(6, f"배포 완료 — 신규 flow ID: {dep.flow_ids}")
+                # 배포 성공 시 flow state 캐시에 저장
+                if req.topology_id:
+                    try:
+                        new_flows = flowrule.get("flows", [])
+                        if new_flows:
+                            topo_hash = None
+                            if req.topology_id == "custom":
+                                custom = _load_custom_topology()
+                                if custom:
+                                    topo_hash = flow_state_manager.compute_topo_hash(custom)
+                            flow_state_manager.save_flows(
+                                topology_id=req.topology_id,
+                                new_flows=new_flows,
+                                intent_summary=req.intent[:80],
+                                topo_hash=topo_hash,
+                            )
+                            progress(6, f"Flow state 저장 완료 ({req.topology_id}, {len(new_flows)}개 rule)")
+                    except Exception as fs_exc:
+                        progress(6, f"Flow state 저장 실패 (무시): {fs_exc}")
             else:
                 progress(6, f"배포 실패: {dep.error}")
             done(6, r6, t)
@@ -822,6 +845,92 @@ async def apply_topology_to_onos(request: Request):
         }
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
+
+
+# ── Flow State 엔드포인트 ─────────────────────────────────────────────────────
+
+@app.get("/api/flow-state")
+def get_all_flow_states():
+    """모든 토폴로지의 저장된 state 목록 반환."""
+    import flow_state_manager
+    return flow_state_manager.list_states()
+
+
+@app.get("/api/flow-state/{topology_id}")
+def get_flow_state(topology_id: str):
+    """
+    특정 토폴로지의 저장된 FlowRule 목록 + ONOS Live와의 sync_status 반환.
+    """
+    import flow_state_manager
+    state = flow_state_manager.get_state_detail(topology_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail=f"'{topology_id}' 저장된 state 없음")
+
+    cached_flows = state.get("flows", [])
+
+    # ONOS Live와의 sync_status 계산 (ONOS 오프라인이면 skip)
+    sync_status = {"in_cache_not_onos": 0, "in_onos_not_cache": 0, "matched": 0, "onos_available": False}
+    try:
+        from stage4_twin.onos_client import OnosClient
+        onos_flows = OnosClient(timeout=2.0).flows() or []
+
+        def _flow_key(f: dict) -> str:
+            criteria = sorted(
+                [f"{c.get('type')}={c.get('ip') or c.get('mac') or c.get('port') or ''}"
+                 for c in f.get("selector", {}).get("criteria", [])],
+            )
+            return f"{f.get('deviceId')}|{f.get('priority')}|{','.join(criteria)}"
+
+        onos_keys = {_flow_key(f) for f in onos_flows}
+        cache_keys = {_flow_key(f) for f in cached_flows}
+
+        sync_status = {
+            "in_cache_not_onos": len(cache_keys - onos_keys),
+            "in_onos_not_cache": len(onos_keys - cache_keys),
+            "matched": len(cache_keys & onos_keys),
+            "onos_available": True,
+        }
+    except Exception:
+        pass
+
+    return {**state, "sync_status": sync_status}
+
+
+@app.delete("/api/flow-state/{topology_id}")
+def clear_flow_state(topology_id: str):
+    """특정 토폴로지의 state 전체 초기화."""
+    import flow_state_manager
+    deleted = flow_state_manager.clear_state(topology_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"'{topology_id}' 저장된 state 없음")
+    return {"ok": True, "topology_id": topology_id}
+
+
+@app.delete("/api/flow-state/{topology_id}/flows/{flow_index}")
+def delete_flow_state_entry(topology_id: str, flow_index: int):
+    """
+    특정 flow(인덱스)를 state에서 제거.
+    ONOS에 해당 flow가 있으면 동시 삭제 시도.
+    """
+    import flow_state_manager
+    removed = flow_state_manager.remove_flow(topology_id, flow_index)
+    if removed is None:
+        raise HTTPException(status_code=404, detail=f"flow_index={flow_index} 없음")
+
+    # ONOS에서도 삭제 시도 (실패해도 state 삭제는 유지)
+    onos_deleted = False
+    try:
+        from stage4_twin.onos_client import OnosClient
+        client = OnosClient(timeout=3.0)
+        device_id = removed.get("deviceId", "")
+        priority = removed.get("priority")
+        if device_id and priority is not None:
+            client.delete_flows_by_priority(priority)
+            onos_deleted = True
+    except Exception:
+        pass
+
+    return {"ok": True, "removed": removed, "onos_deleted": onos_deleted}
 
 
 @app.get("/api/logs")

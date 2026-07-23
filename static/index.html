@@ -129,6 +129,10 @@
         </div>
       </div>
 
+      <div id="load-state-bar">
+        <button id="load-state-btn" onclick="loadFlowState()" title="저장된 FlowRule 상태를 불러와 Digital Twin 배경 환경으로 사용">⬇ Load State</button>
+        <button id="clear-state-btn" onclick="clearLoadedState()" title="불러온 state 초기화" style="display:none">✕ Clear</button>
+      </div>
       <button id="run-btn">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
         Run Pipeline
@@ -250,6 +254,13 @@
             <span>FLOW RULES</span><span class="toggle-arrow">▾</span>
           </div>
           <div class="topo-info-body">
+            <!-- 탭 헤더 -->
+            <div id="flow-tabs">
+              <button class="flow-tab-btn active" data-tab="onos" onclick="activateFlowTab('onos')">ONOS Live</button>
+              <button class="flow-tab-btn" data-tab="saved" onclick="activateFlowTab('saved')">Saved State</button>
+              <button id="clear-saved-btn" onclick="clearAllFlowState()" title="저장된 state 전체 삭제" style="margin-left:auto;background:none;border:none;color:#6b7280;cursor:pointer;font-size:11px;padding:2px 6px">⊘ 초기화</button>
+            </div>
+            <!-- ONOS Live 탭 -->
             <div id="flow-table-section">
               <div class="flow-table-wrap">
                 <div class="flow-table-header">
@@ -261,6 +272,22 @@
                 <div id="flow-table-body"></div>
               </div>
             </div>
+            <!-- Saved State 탭 -->
+            <div id="saved-state-section" style="display:none">
+              <div class="flow-table-wrap">
+                <div class="flow-table-header saved-state-header">
+                  <div>Device</div>
+                  <div>Pri</div>
+                  <div>Match</div>
+                  <div>Action</div>
+                  <div>Intent</div>
+                  <div></div>
+                </div>
+                <div id="saved-state-body">
+                  <div style="padding:12px 10px;font-size:11px;color:#4b5563;font-family:'JetBrains Mono',monospace">Load State 버튼으로 불러오세요</div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div><!-- /#topo-info-scroll -->
@@ -269,6 +296,6 @@
   </aside>
 
 </div>
-<script src="app.js?v=32"></script>
+<script src="app.js?v=33"></script>
 </body>
 </html>

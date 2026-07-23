@@ -148,7 +148,13 @@ class TwinVerifier:
         if getattr(self, "_progress_cb", None):
             self._progress_cb(msg)
 
-    def verify(self, flowrule: dict, progress_cb=None, emit_cb=None) -> TwinResult:
+    def verify(
+        self,
+        flowrule: dict,
+        progress_cb=None,
+        emit_cb=None,
+        preloaded_flows: Optional[list] = None,
+    ) -> TwinResult:
         """
         FlowRule을 Digital Twin에 배포하고 검증한다.
 
@@ -160,14 +166,17 @@ class TwinVerifier:
           3. regression: 관련 없는 host pair 영향 없음
 
         Args:
-            flowrule:    {"flows": [...]} 형식의 FlowRule dict
-            progress_cb: 진행 상황 UI 전달용 콜백 (str → None), 없으면 콘솔만
+            flowrule:        {"flows": [...]} 형식의 FlowRule dict
+            progress_cb:     진행 상황 UI 전달용 콜백 (str → None), 없으면 콘솔만
+            preloaded_flows: 사용자가 UI "Load State"로 불러온 기존 FlowRule 목록.
+                             배포 전 배경 환경으로 함께 설치됨 (검증 대상은 new_flows만).
 
         Returns:
             TwinResult
         """
         self._progress_cb = progress_cb
         self._emit_cb = emit_cb
+        preloaded_flows = preloaded_flows or []
         # ── 플랫폼 체크 ────────────────────────────────────────
         skip_reason = self._check_platform()
         if skip_reason:
@@ -295,6 +304,10 @@ class TwinVerifier:
             client.clear_app_flows()
             time.sleep(1)
 
+            # preloaded_flows 개수 로그 (항상 표시)
+            if preloaded_flows:
+                self._log(f"③+ 사전 로드된 FlowRule {len(preloaded_flows)}개 환경 구성에 포함")
+
             # ── 4. Mininet 토폴로지 시작 ───────────────────
             self._log("④ 잔존 Mininet 인터페이스 정리 중...")
             subprocess.run(
@@ -328,7 +341,14 @@ class TwinVerifier:
             self._log(f"   {'✓' if baseline_ok else '✗'} {baseline_msg}")
 
             # ── 5. FlowRule 배포 ───────────────────────────
+            # preloaded_flows(기존 환경) + new_flows(검증 대상) 모두 설치
             self._log("⑥ FlowRule 가상 스위치에 배포 중...")
+            if preloaded_flows:
+                # _meta 필드 제거 후 배포
+                clean_preloaded = [{k: v for k, v in f.items() if k != "_meta"}
+                                   for f in preloaded_flows]
+                client.deploy_flow_rules({"flows": clean_preloaded})
+                self._log(f"   ↳ 사전 로드 FlowRule {len(clean_preloaded)}개 설치 완료 (배경 환경)")
             client.deploy_flow_rules(flowrule)
             # 모든 flows가 OVS에 push될 때까지 대기 (B7 fix: flows[0]만 대기하던 버그)
             for f in flows:
