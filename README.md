@@ -186,6 +186,8 @@ python main.py --intent "..." --no-rag
 | `0` | APPROVE (모든 검증 통과, 배포 완료) |
 | `1` | APPROVE_WITHOUT_TWIN (Twin 스킵, 배포 완료) |
 | `2` | REJECT (검증 실패 또는 인텐트 거부) |
+| `3` | ERROR (파이프라인이 예외로 중단됨 — 승인/거부 판정에 도달하지 못함) |
+| `4` | DEPLOY_FAILED (승인 판정까지는 통과했으나 ONOS 배포가 실패함) |
 
 ---
 

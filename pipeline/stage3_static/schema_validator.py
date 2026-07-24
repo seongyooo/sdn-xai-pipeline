@@ -6,10 +6,36 @@ LLM 환각(hallucination)으로 인한 잘못된 필드 타입/값을 탐지한�
 """
 from __future__ import annotations
 
+import ipaddress
 import re
 from typing import Optional
 
 from pydantic import BaseModel, field_validator, model_validator
+
+
+def _is_valid_ip_cidr(v) -> bool:
+    """'ip' 또는 'ip/mask' 형식 검증 (옥텟 0-255, mask 0-32)."""
+    if not isinstance(v, str):
+        return False
+    parts = v.split("/")
+    if len(parts) > 2:
+        return False
+    try:
+        ipaddress.IPv4Address(parts[0])
+    except ValueError:
+        return False
+    if len(parts) == 2:
+        try:
+            mask = int(parts[1])
+        except ValueError:
+            return False
+        if not (0 <= mask <= 32):
+            return False
+    return True
+
+
+def _is_valid_port(v) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 65535
 
 # ── 허용 instruction types ─────────────────────────────────────
 VALID_INSTRUCTION_TYPES: set[str] = {
@@ -46,6 +72,31 @@ class _Criterion(BaseModel):
             )
         return v
 
+    @model_validator(mode="after")
+    def _validate_value_fields(self) -> "_Criterion":
+        """type별 값 필드도 검증한다 — extra=allow가 값 자체는 무검증 통과시키므로
+        LLM 환각(잘못된 IP/포트 범위)이 여기서 걸러지지 않으면 Stage3를 그대로
+        통과해 Stage4(ONOS)에서야 실패한다."""
+        t = self.type
+        data = self.model_dump()
+        if t in ("IPV4_SRC", "IPV4_DST"):
+            ip = data.get("ip")
+            if not _is_valid_ip_cidr(ip):
+                raise ValueError(f"{t}.ip가 유효한 IPv4 CIDR이 아닙니다: {ip!r}")
+        elif t in ("TCP_SRC", "TCP_DST"):
+            port = data.get("tcpPort")
+            if not _is_valid_port(port):
+                raise ValueError(f"{t}.tcpPort는 0~65535 범위의 정수여야 합니다: {port!r}")
+        elif t in ("UDP_SRC", "UDP_DST"):
+            port = data.get("udpPort")
+            if not _is_valid_port(port):
+                raise ValueError(f"{t}.udpPort는 0~65535 범위의 정수여야 합니다: {port!r}")
+        elif t == "VLAN_VID":
+            vlan = data.get("vlanId")
+            if not isinstance(vlan, int) or isinstance(vlan, bool) or not (0 <= vlan <= 4095):
+                raise ValueError(f"{t}.vlanId는 0~4095 범위의 정수여야 합니다: {vlan!r}")
+        return self
+
 
 class _Instruction(BaseModel):
     type: str
@@ -60,6 +111,14 @@ class _Instruction(BaseModel):
                 f"허용: {sorted(VALID_INSTRUCTION_TYPES)}"
             )
         return v
+
+    @model_validator(mode="after")
+    def _validate_value_fields(self) -> "_Instruction":
+        if self.type == "OUTPUT":
+            port = getattr(self, "port", None)
+            if port is None or (isinstance(port, str) and not port.strip()):
+                raise ValueError("OUTPUT instruction에는 'port' 필드가 필요합니다.")
+        return self
 
 
 class _Selector(BaseModel):
@@ -92,6 +151,13 @@ class _FlowRule(BaseModel):
     def _priority_range(cls, v: int) -> int:
         if not (0 <= v <= 65535):
             raise ValueError(f"priority는 0~65535 범위여야 합니다. 현재: {v}")
+        return v
+
+    @field_validator("timeout")
+    @classmethod
+    def _timeout_range(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError(f"timeout은 0 이상이어야 합니다. 현재: {v}")
         return v
 
     @field_validator("deviceId")

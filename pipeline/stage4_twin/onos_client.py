@@ -165,9 +165,19 @@ class OnosClient:
         """특정 flow 삭제"""
         self.request("DELETE", f"flows/{device_id}/{flow_id}")
 
-    def delete_flows_by_priority(self, priority: int) -> int:
-        """특정 priority의 flow 전체 삭제. 삭제한 수 반환."""
-        matches = [f for f in self.flows() if f.get("priority") == priority]
+    def delete_flows_by_priority(self, priority: int, device_id: str | None = None) -> int:
+        """특정 priority의 flow 삭제. 삭제한 수 반환.
+
+        device_id를 지정하지 않으면 ONOS 전체에서 해당 priority의 flow를 모두
+        지운다 — 다른 스위치나 배경 환경(preloaded_flows)이 같은 priority를
+        쓰면 무관한 flow까지 collateral 삭제될 수 있으므로, 가능하면 항상
+        device_id를 함께 지정할 것.
+        """
+        matches = [
+            f for f in self.flows()
+            if f.get("priority") == priority
+            and (device_id is None or f.get("deviceId") == device_id)
+        ]
         failed = 0
         for flow in matches:
             try:

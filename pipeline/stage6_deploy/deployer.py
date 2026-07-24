@@ -80,19 +80,23 @@ class Deployer:
             # 배포는 성공했으나 flow ID 조회 실패
             return DeployResult(success=True, flow_ids=[], error=f"flow 조회 실패: {exc}")
 
-        # 배포된 FlowRule의 priority로 필터링 (더 정확한 식별)
-        target_priority = None
-        flows_list = flowrule.get("flows", [])
-        if flows_list:
-            target_priority = flows_list[0].get("priority")
+        # 배포된 FlowRule의 (deviceId, priority) 조합으로 필터링 (더 정확한 식별) —
+        # before/after id 차집합만으로는 동시에 다른 프로세스가 추가한 무관한
+        # flow까지 "신규"로 오귀속될 수 있으므로 둘 다 만족해야 한다.
+        target_keys = {
+            (f.get("deviceId"), f.get("priority"))
+            for f in flowrule.get("flows", [])
+            if f.get("deviceId") and f.get("priority") is not None
+        }
 
         new_flow_ids: list[str] = []
         for flow in after_flows:
             flow_id = flow.get("id")
-            if not flow_id:
+            if not flow_id or flow_id in before_ids:
                 continue
             # 배포 전에 없던 새 flow만 수집
-            if flow_id not in before_ids:
-                new_flow_ids.append(flow_id)
+            if target_keys and (flow.get("deviceId"), flow.get("priority")) not in target_keys:
+                continue
+            new_flow_ids.append(flow_id)
 
         return DeployResult(success=True, flow_ids=new_flow_ids)

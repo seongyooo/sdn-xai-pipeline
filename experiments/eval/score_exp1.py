@@ -107,7 +107,14 @@ class AliasMap:
             return None
         result = []
         for wp in waypoints:
-            wp_str = str(wp)
+            wp_str = str(wp).strip()
+            # 문자열 전체가 알려진 엔티티 별칭이면 canonical ID로 통일.
+            # 포트 없는 waypoint("of:0000000000000002" / "s2" / "switch 2")를
+            # 마지막 콜론 분리 방식으로 처리하면 "of:HEX"가 디바이스 "of"의
+            # 포트로 오인되어 의미상 동일한 표기끼리도 매칭이 깨진다.
+            if wp_str and self.is_known(wp_str):
+                result.append(self.canonical(wp_str))
+                continue
             # Split on last colon to separate port
             idx = wp_str.rfind(":")
             if idx >= 0:
@@ -718,10 +725,18 @@ def load_topology(path: Path) -> AliasMap:
 def load_log_files(
     logs_path: Path,
     treatment_filter: str | None,
+    run_id_filter: str | None = None,
 ) -> dict[str, list[tuple[int, list[dict]]]]:
     """
     Load all JSONL log files.
     Returns: {treatment: [(repetition, records), ...]}
+
+    Safety: run_exp1.py flushes one rep at a time, so a crashed/interrupted
+    session leaves a *complete-looking* but stray run_id behind (different
+    run_id, same treatment). If run_id_filter is not given and more than one
+    distinct run_id is found for the same treatment, this raises SystemExit
+    instead of silently summing them into the aggregate — that would corrupt
+    the reported repetition count/stats with leftover partial runs.
     """
     if logs_path.is_file():
         files = [logs_path]
@@ -729,6 +744,7 @@ def load_log_files(
         files = sorted(logs_path.glob("*.jsonl"))
 
     treatment_runs: dict[str, list[tuple[int, list[dict]]]] = defaultdict(list)
+    treatment_run_ids: dict[str, set[str]] = defaultdict(set)
 
     for fpath in files:
         records = [json.loads(l) for l in fpath.read_text(encoding="utf-8").splitlines() if l.strip()]
@@ -736,11 +752,26 @@ def load_log_files(
             continue
         trt = records[0].get("treatment", "unknown")
         rep = records[0].get("repetition", 0)
+        run_id = records[0].get("run_id", "unknown")
 
         if treatment_filter and trt != treatment_filter:
             continue
+        if run_id_filter and run_id != run_id_filter:
+            continue
 
         treatment_runs[trt].append((rep, records))
+        treatment_run_ids[trt].add(run_id)
+
+    if not run_id_filter:
+        contaminated = {trt: ids for trt, ids in treatment_run_ids.items() if len(ids) > 1}
+        if contaminated:
+            print("ERROR: multiple distinct run_ids found for the same treatment "
+                  "(likely leftover/crashed runs mixed with the intended run):")
+            for trt, ids in sorted(contaminated.items()):
+                print(f"  {trt}: {sorted(ids)}")
+            print("Pass --run-id <run_id> to pick one explicitly, or remove the stray "
+                  "log files before scoring.")
+            sys.exit(1)
 
     # Sort by repetition within each treatment
     for trt in treatment_runs:
@@ -814,6 +845,7 @@ def main() -> None:
     parser.add_argument("--logs",      required=True, help="Logs directory or specific JSONL file")
     parser.add_argument("--output",    required=True, help="Output report JSON path")
     parser.add_argument("--treatment", default=None,  help="Filter by treatment (e.g. T-D)")
+    parser.add_argument("--run-id",    default=None,  help="Filter by exact run_id — required when multiple run_ids exist for the same treatment (e.g. leftover crashed runs)")
     parser.add_argument("--bootstrap", action="store_true", help="Compute 95% bootstrap CI per rep (slow)")
     args = parser.parse_args()
 
@@ -842,7 +874,7 @@ def main() -> None:
     alias_map = load_topology(topology_path)
 
     print(f"Loading log files from: {logs_path}")
-    treatment_runs = load_log_files(logs_path, args.treatment)
+    treatment_runs = load_log_files(logs_path, args.treatment, args.run_id)
     if not treatment_runs:
         print("ERROR: no matching log files found")
         sys.exit(1)

@@ -430,9 +430,42 @@ rejection_recall   | 0.xx       | 0.xx
 
 ---
 
+## 15. GOLD-350 — 팀원이 작성한 이중검증 데이터셋 (2026-07-23 추가)
+
+`docs/dataset/`(`gold.jsonl` 350케이스 + `DATASET_CARD.md` + `ANNOTATION_GUIDELINE.md`)에 팀원이
+작성한 데이터셋이 추가됨. §14의 "Gold 검증 필요" 항목이 사실상 이 데이터셋으로 해결된다 —
+독립 이중 라벨링 + adjudication(Cohen's κ=1.000)을 이미 거쳤고, 단일 작성자였던 기존
+`intents_eval.jsonl`(60케이스)보다 규모(350케이스, 7카테고리 균등 50개씩)와 검증 수준 모두 우위.
+
+- 변환기: `experiments/eval/convert_gold350.py` (GOLD-350 스키마 → Exp-1 gold 스키마)
+- 변환 결과: `experiments/eval/data/gold350_eval.jsonl` (350/350 변환 성공)
+- **검증 완료**: `python experiments/eval/validate_gold.py --dataset experiments/eval/data/gold350_eval.jsonl`
+  → accepted 300/300 케이스 전부 Stage1 IR 구성 + Stage2 컴파일 PASS. score_exp1.py 자기 자신
+  대비 채점(self-score) 결과도 300/300 NEM=1.0 — 스키마 변환 정확성 확인됨.
+- **스키마 차이 (변환기가 처리)**: GOLD-350은 action이 3그룹(forward/deny/prioritize/allow)이고
+  intent_type(7종)이 별도 필드 — pipeline은 action 자체가 5종(forward/block/qos/sfc/reroute).
+  변환기는 intent_type 기준으로 action을 재매핑한다. SFC는 GOLD-350이 ingress/transit/egress로
+  미리 쪼개져 있어(`sfc_role` 태그) 이를 단일 `action=sfc` + `routing.waypoints` IR로 재합성한다.
+- **알아둘 한계 2가지**:
+  1. Multi-hop SFC(체인 길이 2, 4케이스: G-SFC-031~034)는 gold IR로는 정확하지만
+     `stage2_flowrule/compiler.py`가 `waypoints[0]`만 컴파일함 — Exp-1(Stage1 IR 채점)은 안전,
+     Exp-2/3(전체 파이프라인 실행)에는 아직 못 씀.
+  2. GOLD-350의 reroute 카테고리는 `routing.via_device` 개념이 없음(enforcement만으로 경로
+     변경을 표현) — 기존 `intents_eval.jsonl`과 컨벤션이 다르다. score_exp1.py는 gold가 null인
+     슬롯을 채점에서 제외하므로 크래시는 없지만, 이 데이터셋의 reroute 케이스는 via_device/
+     avoid_device 슬롯이 항상 채점 제외된다.
+- **결정 (2026-07-23): GOLD-350을 Exp-1 주 데이터셋으로 교체함.** `experiments/eval/config/
+  T-A.toml`~`T-D.toml`(Small 트랙 4개)의 `dataset_path`를 전부 `gold350_eval.jsonl`로 변경.
+  `T-A-large.toml`~`T-D-large.toml`(Large 트랙)은 별개 토폴로지 기준이라 변경 안 함.
+  기존 `intents_eval.jsonl`(60케이스)은 삭제하지 않고 보관 — 필요시 참고용/교차검증용으로 남김.
+  **주의**: 기존 T-D 진행분(rep 1~7,10, run_id `67f49bee` 등)은 60케이스 기준이라 350케이스
+  기준 채점과 호환 안 됨 — case_id 자체가 다름(`FWD-01` vs `G-FWD-001`). **T-A/B/C/D 전부
+  gold350_eval.jsonl 기준으로 처음부터 다시 실행해야 함.** `run_exp1.py`/`score_exp1.py`
+  dry-run으로 350케이스 정상 로드 확인됨(추가 코드 수정 불필요).
+
 ## 14. 주의사항
 
-- **Gold 검증 필요**: `intents_eval.jsonl` gold는 단일 작성자. 논문 게재 전 파이프라인 실행 검증 + 2인 독립 리뷰 권장.
+- **Gold 검증 필요**: `intents_eval.jsonl` gold는 단일 작성자. 논문 게재 전 파이프라인 실행 검증 + 2인 독립 리뷰 권장. → **2026-07-23: 15장의 GOLD-350으로 사실상 해결됨** (기존 60케이스 자체가 아니라, 더 크고 검증된 대체/보완 데이터셋 확보).
 - **T-A 채점 분리**: T-A는 FlowRule JSON 스키마로 채점. IntentIR 슬롯 지표(T-B~D)와 직접 비교 불가. 공통 지표(`schema_validity`, `status_match`, `rejection_recall`)로만 T-A vs T-B 비교.
 - **복합 인텐트 매칭**: 예측 rules 배열과 gold rules 배열이 순서 다를 수 있음 → order-agnostic best-match 알고리즘 적용 필수.
 - **Large 실험 시기**: Small 실험 완료 후 결과 분석 → 보완 방향 결정 후 Large 진행.

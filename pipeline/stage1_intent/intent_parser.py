@@ -117,14 +117,29 @@ Examples:
 - "unknown_entity" : references a host, IP, or switch not in the topology
     e.g. "h9", "database-server", "10.0.0.99", "switch 99"
 
-## src/dst IP requirements
+## Selector completeness requirements
 
-- For action=block and action=forward: BOTH source.ip AND destination.ip must be specified.
-  If either is missing, reject with reason "ambiguous".
-  Valid:   "block all traffic from 10.0.0.1 to 10.0.0.4 on switch 4"
-  Invalid: "block traffic from 10.0.0.1" (no destination → ambiguous)
-- For action=qos, sfc, reroute: source/destination ip are recommended but not strictly required.
-- Do NOT infer or guess IPs from context. If not stated, reject."""
+- A rule is VALID as long as its selector has at least ONE concrete match criterion:
+  source, destination, protocol, a port number, or an ingress port (in_port).
+  One-sided flows ARE supported:
+  Valid: "On switch 1, drop all traffic from 10.0.0.1"          (source only)
+  Valid: "On switch 4, block traffic to h4"                     (destination only)
+  Valid: "Drop packets arriving on port 3 of switch 1"          (in_port only)
+  Valid: "On switch 1, forward traffic for 10.0.0.2 out port 4" (destination + egress port)
+- Exception — action=forward with NO destination and NO egress_port (outside a
+  compound default clause) is ambiguous: there is no way to know where the
+  traffic should go.
+  Invalid: "Forward traffic from 10.0.0.1 on switch 1" (source only, no target → ambiguous)
+- Compound default clauses ("and forward everything else normally", "keep
+  forwarding the rest") are VALID: emit a catch-all rule with
+  selector.eth_type="ipv4" and all other selector fields null.
+  Example: "Drop all traffic from h2 on switch 1 and forward everything else normally"
+  → rules[0]: action=block,   selector.source.host=h2,       enforcement.device=switch 1
+  → rules[1]: action=forward, selector.eth_type="ipv4" (catch-all), enforcement.device=switch 1
+- Reject with "ambiguous" ONLY when no concrete match criterion AND no concrete
+  action can be identified (e.g. "make the network better", "optimize traffic").
+- Do NOT invent IPs, hosts, switches, or ports that are not stated in the intent
+  or present in the topology inventory."""
 
 
 class IntentParser:

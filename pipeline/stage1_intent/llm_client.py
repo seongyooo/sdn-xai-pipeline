@@ -76,6 +76,9 @@ class LLMClient:
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_key}",
+            # urllib 기본 User-Agent("Python-urllib/3.x")는 ollama.jangmyun.dev
+            # 앞단의 Cloudflare가 봇으로 간주해 403(코드 1010)으로 차단한다.
+            "User-Agent": "Mozilla/5.0",
         }
 
         for attempt in range(3):
@@ -147,6 +150,7 @@ class LLMClient:
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_key}",
+            "User-Agent": "Mozilla/5.0",
         }
 
         for attempt in range(3):

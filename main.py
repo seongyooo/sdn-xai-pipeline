@@ -74,7 +74,7 @@ def main() -> int:
     intent: str = args.intent.strip()
     if not intent:
         print("오류: 인텐트가 비어 있습니다.")
-        return 1
+        return 3
     model: str = args.model or config.LLM_MODEL
     rag_k: int = args.rag_k
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -146,7 +146,7 @@ def main() -> int:
         pipeline_result["stage1"] = {"error": str(exc)}
         _save_log(run_id, pipeline_result)
         print(f"\n파이프라인 오류로 중단. 결과: logs/{run_id}.json")
-        return 1
+        return 3
 
     # ── Repair Loop: Stage 1 → 2 → 3 ─────────────────────────
     from stage2_flowrule.compiler import compile_flowrule
@@ -176,7 +176,7 @@ def main() -> int:
             print(f"  오류: {exc}")
             pipeline_result["stage1"] = {"error": str(exc)}
             _save_log(run_id, pipeline_result)
-            return 1
+            return 3
 
         if prediction.status == "rejected":
             reason = prediction.rejection_reason or "unknown"
@@ -229,7 +229,7 @@ def main() -> int:
             print(f"  오류: {exc}")
             pipeline_result["stage2"] = {"error": str(exc)}
             _save_log(run_id, pipeline_result)
-            return 1
+            return 3
 
         flows = flowrule.get("flows", [])
         flow = flows[0] if flows else {}
@@ -263,7 +263,7 @@ def main() -> int:
             print(f"  오류: {exc}")
             pipeline_result["stage3"] = {"error": str(exc)}
             _save_log(run_id, pipeline_result)
-            return 1
+            return 3
 
         stage3_summary = static_result.summary()
         print(f"  {stage3_summary}")
@@ -351,7 +351,7 @@ def main() -> int:
         print(f"  오류: {exc}")
         pipeline_result["stage5"] = {"error": str(exc)}
         _save_log(run_id, pipeline_result)
-        return 1
+        return 3
 
     # XAI 설명 출력 (들여쓰기 포함)
     xai_text_lines = xai_report.to_text().strip().split("\n")
@@ -376,7 +376,7 @@ def main() -> int:
             }
         except Exception as exc:
             print(f"  배포 오류: {exc}")
-            pipeline_result["stage6"] = {"error": str(exc)}
+            pipeline_result["stage6"] = {"success": False, "error": str(exc)}
 
     elif decision in ("APPROVE", "APPROVE_WITHOUT_TWIN") and args.skip_deploy:
         _print_stage(6, "ONOS 배포")
@@ -397,8 +397,19 @@ def main() -> int:
     # ── 최종 출력 ────────────────────────────────────────────
     _print_footer(decision, log_path)
 
-    # 종료 코드 (0=APPROVE, 1=APPROVE_WITHOUT_TWIN, 2=REJECT)
-    if decision == "APPROVE":
+    # 배포가 실제로 시도됐는데 실패했으면 승인 판정과 무관하게 이를 반영한다
+    # (그렇지 않으면 exit code만 보는 자동화 스크립트가 배포 실패를 성공으로 오인함)
+    stage6 = pipeline_result.get("stage6", {})
+    deploy_failed = (
+        stage6.get("status") != "skipped"
+        and "success" in stage6
+        and stage6["success"] is False
+    )
+
+    # 종료 코드 (0=APPROVE, 1=APPROVE_WITHOUT_TWIN, 2=REJECT, 3=ERROR(파이프라인 중단), 4=DEPLOY_FAILED)
+    if deploy_failed:
+        return 4
+    elif decision == "APPROVE":
         return 0
     elif decision == "APPROVE_WITHOUT_TWIN":
         return 1

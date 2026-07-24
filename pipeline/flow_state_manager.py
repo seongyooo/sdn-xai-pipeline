@@ -11,6 +11,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -19,6 +21,11 @@ logger = logging.getLogger(__name__)
 
 _BASE_DIR = Path(__file__).resolve().parent.parent
 FLOW_STATE_DIR = _BASE_DIR / "data" / "flow_state"
+
+# FastAPI는 동기 경로 함수를 threadpool에서 실행하므로, 동시 요청이 같은
+# state 파일을 동시에 read-modify-write할 수 있다. 프로세스 내 동시 접근만
+# 막으면 되므로(멀티 프로세스 배포는 가정하지 않음) 단순 전역 락으로 충분하다.
+_LOCK = threading.Lock()
 
 
 # ── 내부 헬퍼 ─────────────────────────────────────────────────────────────────
@@ -41,8 +48,12 @@ def _read_file(topology_id: str) -> dict:
 
 
 def _write_file(topology_id: str, data: dict) -> None:
+    """임시 파일에 쓴 뒤 os.replace()로 원자적 교체 — 쓰기 도중 프로세스가
+    죽어도 기존 파일이 손상되지 않는다(부분 쓰기 상태로 남지 않음)."""
     p = _state_path(topology_id)
-    p.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, p)
 
 
 def _strip_meta(flows: list[dict]) -> list[dict]:
@@ -106,29 +117,30 @@ def save_flows(
     각 flow에 _meta 필드(배포 시각, 인텐트 요약)를 첨부해 UI 표시에 활용.
     topo_hash는 커스텀 토폴로지에만 사용.
     """
-    state = _read_file(topology_id)
-    existing_flows: list[dict] = state.get("flows", [])
+    with _LOCK:
+        state = _read_file(topology_id)
+        existing_flows: list[dict] = state.get("flows", [])
 
-    now = datetime.now(timezone.utc).isoformat()
-    annotated = []
-    for f in new_flows:
-        entry = dict(f)
-        entry["_meta"] = {
-            "intent": intent_summary,
-            "deployed_at": now,
+        now = datetime.now(timezone.utc).isoformat()
+        annotated = []
+        for f in new_flows:
+            entry = dict(f)
+            entry["_meta"] = {
+                "intent": intent_summary,
+                "deployed_at": now,
+            }
+            annotated.append(entry)
+
+        updated_flows = existing_flows + annotated
+        payload: dict = {
+            "topology_id": topology_id,
+            "flows": updated_flows,
+            "updated_at": now,
         }
-        annotated.append(entry)
+        if topo_hash is not None:
+            payload["topo_hash"] = topo_hash
 
-    updated_flows = existing_flows + annotated
-    payload: dict = {
-        "topology_id": topology_id,
-        "flows": updated_flows,
-        "updated_at": now,
-    }
-    if topo_hash is not None:
-        payload["topo_hash"] = topo_hash
-
-    _write_file(topology_id, payload)
+        _write_file(topology_id, payload)
     logger.info(f"[FlowState] '{topology_id}' state 저장: +{len(new_flows)}개 → 총 {len(updated_flows)}개")
 
 
@@ -136,14 +148,15 @@ def remove_flow(topology_id: str, flow_index: int) -> Optional[dict]:
     """
     특정 인덱스의 flow를 state에서 제거. 제거된 flow 반환, 없으면 None.
     """
-    state = _read_file(topology_id)
-    flows: list[dict] = state.get("flows", [])
-    if flow_index < 0 or flow_index >= len(flows):
-        return None
-    removed = flows.pop(flow_index)
-    state["flows"] = flows
-    state["updated_at"] = datetime.now(timezone.utc).isoformat()
-    _write_file(topology_id, state)
+    with _LOCK:
+        state = _read_file(topology_id)
+        flows: list[dict] = state.get("flows", [])
+        if flow_index < 0 or flow_index >= len(flows):
+            return None
+        removed = flows.pop(flow_index)
+        state["flows"] = flows
+        state["updated_at"] = datetime.now(timezone.utc).isoformat()
+        _write_file(topology_id, state)
     logger.info(f"[FlowState] '{topology_id}' flow[{flow_index}] 삭제됨")
     return removed
 

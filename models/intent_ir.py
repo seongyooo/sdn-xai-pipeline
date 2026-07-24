@@ -18,14 +18,34 @@ Stage1(인텐트 파싱) → Stage2(FlowRule 컴파일)의 교환 형식.
 """
 from __future__ import annotations
 
+import ipaddress
 import re
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
 
-# ── IP 유효성 검사 패턴 ───────────────────────────────────────────────
-_IP_PATTERN = re.compile(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$")
+def _is_valid_ip_with_mask(v: str) -> bool:
+    """'ip' 또는 'ip/mask' 형식 검증 (옥텟 0-255, mask 0-32).
+
+    단순 자릿수 패턴(예: 999.999.999.999)은 통과시키지 않는다 — LLM 환각으로
+    나온 잘못된 옥텟이 그대로 FlowRule까지 흘러가는 것을 막기 위함.
+    """
+    parts = v.split("/")
+    if len(parts) > 2:
+        return False
+    try:
+        ipaddress.IPv4Address(parts[0])
+    except ValueError:
+        return False
+    if len(parts) == 2:
+        try:
+            mask = int(parts[1])
+        except ValueError:
+            return False
+        if not (0 <= mask <= 32):
+            return False
+    return True
 
 # ── action → intent_type 자동 매핑 ───────────────────────────────────
 _ACTION_TO_INTENT_TYPE: dict[str, str] = {
@@ -54,8 +74,7 @@ class EndpointRef(BaseModel):
         v = str(v).strip()
         if not v:
             return None
-        ip_part = v.split("/")[0]
-        if not _IP_PATTERN.match(ip_part):
+        if not _is_valid_ip_with_mask(v):
             return None
         return v if "/" in v else v + "/32"
 
@@ -70,6 +89,13 @@ class IntentSelector(BaseModel):
     dst_port: Optional[int] = None
     in_port: Optional[int] = None       # 입력 포트 매칭
 
+    @field_validator("src_port", "dst_port", "in_port")
+    @classmethod
+    def _port_range(cls, v: Optional[int]) -> Optional[int]:
+        if v is not None and not (0 <= v <= 65535):
+            raise ValueError(f"포트는 0~65535 범위여야 합니다. 현재: {v}")
+        return v
+
 
 class IntentEnforcement(BaseModel):
     """정책 집행 위치 및 출력 포트 — 어디서, 어느 포트로"""
@@ -77,6 +103,20 @@ class IntentEnforcement(BaseModel):
     egress_port: Optional[int] = None       # 출력 포트 (forward/qos: 목적지, sfc: waypoint 포트)
     alt_egress_port: Optional[int] = None   # SFC waypoint 복귀 후 출력 포트 / reroute 대체 포트
     set_vlan_id: Optional[int] = None       # VLAN 태깅
+
+    @field_validator("egress_port", "alt_egress_port")
+    @classmethod
+    def _egress_port_range(cls, v: Optional[int]) -> Optional[int]:
+        if v is not None and not (0 <= v <= 65535):
+            raise ValueError(f"포트는 0~65535 범위여야 합니다. 현재: {v}")
+        return v
+
+    @field_validator("set_vlan_id")
+    @classmethod
+    def _vlan_range(cls, v: Optional[int]) -> Optional[int]:
+        if v is not None and not (0 <= v <= 4095):
+            raise ValueError(f"VLAN ID는 0~4095 범위여야 합니다. 현재: {v}")
+        return v
 
 
 class IntentQoS(BaseModel):
@@ -266,12 +306,28 @@ class IntentIR(BaseModel):
         # ── selector ─────────────────────────────────────────────────
         sel_raw: dict = raw.get("selector") or {}
 
+        def _validate_raw_ip(raw_ip, field_name: str) -> None:
+            """LLM이 반환한 원본 ip 문자열을 정규화 전에 검증한다.
+
+            EndpointRef._normalize_ip는 유효하지 않은 값을 조용히 None으로
+            떨어뜨리므로, 여기서 먼저 검증해 환각된 IP(예: 999.999.999.999)를
+            "제약 없음"으로 조용히 흘려보내지 않고 명시적으로 거부한다.
+            """
+            if not raw_ip:
+                return
+            if not _is_valid_ip_with_mask(str(raw_ip).strip()):
+                raise ValueError(
+                    f"LLM이 {field_name}에 유효하지 않은 값 '{raw_ip}'을 반환했습니다. "
+                    "IP 주소(예: 10.0.0.1)를 포함한 인텐트를 입력해주세요."
+                )
+
         # source
         src_raw = sel_raw.get("source") or {}
         if not src_raw and raw.get("src_ip"):          # 플랫 형식 폴백
             src_raw = {"ip": raw["src_ip"]}
         if isinstance(src_raw, str):
             src_raw = {"ip": src_raw}
+        _validate_raw_ip(src_raw.get("ip"), "selector.source.ip")
         source_ref = EndpointRef(
             host=src_raw.get("host") or None,
             ip=src_raw.get("ip") or None,
@@ -283,20 +339,11 @@ class IntentIR(BaseModel):
             dst_raw = {"ip": raw["dst_ip"]}
         if isinstance(dst_raw, str):
             dst_raw = {"ip": dst_raw}
+        _validate_raw_ip(dst_raw.get("ip"), "selector.destination.ip")
         dest_ref = EndpointRef(
             host=dst_raw.get("host") or None,
             ip=dst_raw.get("ip") or None,
         ) if dst_raw else None
-
-        # IP 유효성 — non-null인데 유효하지 않은 IPv4이면 오류
-        for ref, field_name in ((source_ref, "selector.source.ip"), (dest_ref, "selector.destination.ip")):
-            if ref and ref.ip:
-                ip_part = ref.ip.split("/")[0]
-                if not _IP_PATTERN.match(ip_part):
-                    raise ValueError(
-                        f"LLM이 {field_name}에 유효하지 않은 값 '{ref.ip}'을 반환했습니다. "
-                        "IP 주소(예: 10.0.0.1)를 포함한 인텐트를 입력해주세요."
-                    )
 
         # protocol
         proto_raw = sel_raw.get("protocol") or raw.get("ip_proto")

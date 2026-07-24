@@ -136,9 +136,18 @@ def _build_criteria(
             criteria.append({"type": "IPV4_SRC", "ip": ir.src_ip})
         if ir.dst_ip:
             criteria.append({"type": "IPV4_DST", "ip": ir.dst_ip})
-    elif eth_type_key is not None and ir.src_ip and not skip_src_ip:
-        # ipv6/arp 등 기타 eth_type에서도 IP 필드 처리 (현재 미사용이지만 안전하게)
-        pass
+    elif eth_type_key in ("arp", "ipv6"):
+        # IntentIR의 src_ip/dst_ip는 IPv4 전용(EndpointRef가 IPv4만 검증)이고,
+        # ARP는 IP가 아닌 별도 필드(ARP_SPA/TPA)를 쓰므로 이 시스템에서
+        # IPV4_SRC/DST criterion으로 표현할 수 없다. 예전엔 여기서 조용히
+        # 아무 criteria도 안 붙여서 사용자가 지정한 IP 제약이 결과 FlowRule에서
+        # 소리 없이 사라졌다(의도보다 넓은 범위로 컴파일됨) — 이제 명시적으로 거부한다.
+        unsupported_ip = ir.dst_ip is not None or (ir.src_ip is not None and not skip_src_ip)
+        if unsupported_ip:
+            raise CompileError(
+                f"eth_type='{eth_type_key}'에서는 IPv4 주소(src_ip/dst_ip) 기반 매칭을 지원하지 않습니다 "
+                "(ARP/IPv6 트래픽은 이 시스템에서 IP criteria로 표현할 수 없음)."
+            )
 
     if ir.ip_proto:
         criteria.append({"type": "IP_PROTO", "protocol": IP_PROTO_MAP[ir.ip_proto]})
