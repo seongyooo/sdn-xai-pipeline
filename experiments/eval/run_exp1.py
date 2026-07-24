@@ -15,8 +15,10 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 # ── Project root on sys.path ──────────────────────────────────────────
@@ -123,6 +125,7 @@ def _build_topology_prompt(topo_data: dict) -> str:
     hosts: list[str] = []
     switch_lines: list[str] = []
     ports_map: dict[str, list[int]] = topo_data.get("ports", {})
+    wiring: dict[str, dict] = topo_data.get("wiring", {})
 
     for entity in topo_data.get("entities", []):
         eid = entity["id"]
@@ -137,21 +140,33 @@ def _build_topology_prompt(topo_data: dict) -> str:
             # aliases: [short_name, "switch N", "switchN", "of:..."]
             name = aliases[0] if aliases else eid
             onos_id = next((a for a in aliases if a.startswith("of:")), "")
-            ports = sorted(ports_map.get(onos_id, []))
-            port_str = ",".join(str(p) for p in ports)
+            sw_wiring = wiring.get(name)
+            if sw_wiring:
+                # 배선 포함 표기: "s1 (of:...) ports: 1->s2, 2->s3, 3->h1, 4->h2, 9->firewall..."
+                # gold의 reroute/sfc enforcement 값(어느 포트가 어느 스위치로 가는지)이
+                # 이 배선 지식에 의존하므로 grounding이 반드시 커버해야 한다.
+                port_str = ", ".join(
+                    f"{p}->{dst}" for p, dst in sorted(sw_wiring.items(), key=lambda x: int(x[0]))
+                )
+            else:
+                ports = sorted(ports_map.get(onos_id, []))
+                port_str = ",".join(str(p) for p in ports)
             switch_lines.append(f"    {name} ({onos_id}) ports: {port_str}")
 
     host_str = ", ".join(hosts)
     switch_str = "\n".join(switch_lines)
 
+    notes = topo_data.get("wiring_notes", [])
+    notes_str = ("\n  Topology notes:\n" + "\n".join(f"    - {n}" for n in notes)) if notes else ""
+
     waypoints = topo_data.get("ids_waypoints", [])
-    wp_str = ", ".join(waypoints) if waypoints else "none"
+    wp_line = f"  IDS/Firewall waypoints: {', '.join(waypoints)}\n" if waypoints else ""
 
     return (
         f"Network topology (ONLY reference entities listed here - do not invent others):\n"
         f"  Hosts: {host_str}\n"
-        f"  Switches:\n{switch_str}\n"
-        f"  IDS/Firewall waypoints: {wp_str}\n"
+        f"  Switches (port -> connected node):\n{switch_str}{notes_str}\n"
+        f"{wp_line}"
         f"If the intent mentions a host IP or switch not in this list, "
         f"reject with reason \"unknown_entity\"."
     )
@@ -214,6 +229,7 @@ def call_gemini(
     temperature: float = 0.2,
     timeout_s: float = 30.0,
     retries: int = 2,
+    max_tokens: int | None = None,
 ) -> tuple[str | None, dict | None, int, int, float, str | None, str | None]:
     """
     Call Gemini and return:
@@ -234,14 +250,17 @@ def call_gemini(
     for attempt in range(max_attempts):
         t0 = time.perf_counter()
         try:
+            gen_config_kwargs = dict(
+                system_instruction=system,
+                response_mime_type="application/json",
+                temperature=temperature,
+            )
+            if max_tokens is not None:
+                gen_config_kwargs["max_output_tokens"] = max_tokens
             response = client.models.generate_content(
                 model=model,
                 contents=user,
-                config=types.GenerateContentConfig(
-                    system_instruction=system,
-                    response_mime_type="application/json",
-                    temperature=temperature,
-                ),
+                config=types.GenerateContentConfig(**gen_config_kwargs),
             )
             latency_ms = (time.perf_counter() - t0) * 1000
 
@@ -275,6 +294,157 @@ def call_gemini(
 
 
 # ════════════════════════════════════════════════════════════════════════
+# OpenAI 호환 /chat/completions 공용 호출 (Ollama, OpenRouter 등)
+# ════════════════════════════════════════════════════════════════════════
+
+def _call_openai_compatible(
+    base_url: str,
+    api_key: str,
+    model: str,
+    system: str,
+    user: str,
+    temperature: float = 0.2,
+    timeout_s: float = 120.0,
+    retries: int = 2,
+    max_tokens: int | None = None,
+    extra_payload: dict | None = None,
+) -> tuple[str | None, dict | None, int, int, float, str | None, str | None]:
+    """
+    OpenAI 호환 /chat/completions 호출 (non-streaming — usage 토큰 수 확보).
+    반환 시그니처는 call_gemini와 동일:
+      (raw_text, parsed_json, input_tokens, output_tokens, latency_ms, error_kind, error_msg)
+
+    thinking 모드 모델(qwen3 등) 대응: 응답의 <think>...</think> 블록과 ```json 코드펜스를
+    제거한 뒤 JSON 파싱한다 (pipeline/stage1_intent/llm_client.py와 동일 방식).
+
+    extra_payload: 요청 바디에 그대로 병합되는 provider별 확장 필드
+      (예: OpenRouter의 {"reasoning": {"max_tokens": N}}).
+    """
+    import re as _re
+    import urllib.request
+    import urllib.error
+
+    url = f"{base_url.rstrip('/')}/chat/completions"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+        # Cloudflare가 Python-urllib 기본 UA를 봇으로 차단(403 code 1010)하므로 필수
+        "User-Agent": "Mozilla/5.0",
+    }
+    payload: dict = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "stream": False,
+        "temperature": temperature,
+    }
+    if max_tokens is not None:
+        payload["max_tokens"] = max_tokens
+    if extra_payload:
+        payload.update(extra_payload)
+
+    max_attempts = retries + 1
+    for attempt in range(max_attempts):
+        t0 = time.perf_counter()
+        try:
+            req = urllib.request.Request(
+                url, data=json.dumps(payload).encode("utf-8"),
+                headers=headers, method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+            latency_ms = (time.perf_counter() - t0) * 1000
+
+            raw_text = (
+                body.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
+            ).strip()
+            usage = body.get("usage", {}) or {}
+            input_tokens = usage.get("prompt_tokens", 0) or 0
+            output_tokens = usage.get("completion_tokens", 0) or 0
+
+            cleaned = raw_text
+            if "<think>" in cleaned:
+                cleaned = _re.sub(r"<think>.*?</think>", "", cleaned, flags=_re.DOTALL).strip()
+            if cleaned.startswith("```"):
+                lines = cleaned.split("\n")
+                inner = lines[1:] if lines[0].startswith("```") else lines
+                if inner and inner[-1].strip() == "```":
+                    inner = inner[:-1]
+                cleaned = "\n".join(inner).strip()
+
+            try:
+                parsed = json.loads(cleaned)
+            except json.JSONDecodeError as exc:
+                return raw_text, None, input_tokens, output_tokens, latency_ms, "schema_invalid", str(exc)
+
+            return raw_text, parsed, input_tokens, output_tokens, latency_ms, None, None
+
+        except Exception as exc:
+            latency_ms = (time.perf_counter() - t0) * 1000
+            err_str = str(exc)
+            if attempt < max_attempts - 1:
+                wait = 2 ** attempt
+                print(f"    [retry {attempt+1}/{max_attempts}] {err_str[:80]} - wait {wait}s")
+                time.sleep(wait)
+            else:
+                return None, None, 0, 0, latency_ms, "transport", err_str
+
+    return None, None, 0, 0, 0.0, "transport", "max retries exceeded"
+
+
+def call_ollama(model: str, **kwargs):
+    """Ollama(로컬/자체호스팅) OpenAI 호환 엔드포인트 호출."""
+    return _call_openai_compatible(
+        base_url=pipeline_config.LLM_BASE_URL,
+        api_key=pipeline_config.LLM_API_KEY,
+        model=model,
+        **kwargs,
+    )
+
+
+def call_openrouter(model: str, reasoning_max_tokens: int | None = None, **kwargs):
+    """OpenRouter (https://openrouter.ai) 호출. 모델명 예: 'qwen/qwen3-8b'.
+
+    reasoning_max_tokens: qwen3 같은 hybrid thinking 모델의 thinking 토큰 예산 상한
+      (OpenRouter의 {"reasoning": {"max_tokens": N}} — effort 방식은 Qwen3에 안 먹혀서
+      max_tokens 방식 사용). None이면 무제한(모델 기본 동작).
+    """
+    if not pipeline_config.OPENROUTER_API_KEY:
+        raise RuntimeError("OPENROUTER_API_KEY not set — check .env file")
+    extra_payload = (
+        {"reasoning": {"max_tokens": reasoning_max_tokens}}
+        if reasoning_max_tokens is not None
+        else None
+    )
+    return _call_openai_compatible(
+        base_url=pipeline_config.OPENROUTER_BASE_URL,
+        api_key=pipeline_config.OPENROUTER_API_KEY,
+        model=model,
+        extra_payload=extra_payload,
+        **kwargs,
+    )
+
+
+def call_llm(model: str, reasoning_max_tokens: int | None = None, **kwargs):
+    """모델명으로 백엔드 자동 선택.
+
+    gemini* → Gemini API
+    '/' 포함 (예: qwen/qwen3-8b) → OpenRouter (OpenRouter 모델 ID는 항상 vendor/model 형식)
+    그 외 (예: qwen3:8b) → Ollama
+
+    reasoning_max_tokens는 OpenRouter 경로에만 의미가 있으므로 여기서만 전달한다
+    (Gemini/Ollama 호출부는 이 파라미터를 모른다).
+    """
+    if pipeline_config.is_gemini(model):
+        return call_gemini(model=model, **kwargs)
+    if "/" in model:
+        return call_openrouter(model=model, reasoning_max_tokens=reasoning_max_tokens, **kwargs)
+    return call_ollama(model=model, **kwargs)
+
+
+# ════════════════════════════════════════════════════════════════════════
 # Main runner
 # ════════════════════════════════════════════════════════════════════════
 
@@ -285,6 +455,7 @@ def run(
     repetitions: int,
     output_dir: Path,
     dry_run: bool = False,
+    concurrency: int = 1,
 ) -> None:
     exp = cfg["experiment"]
     llm = cfg["llm"]
@@ -294,9 +465,16 @@ def run(
     temperature = float(llm.get("temperature", 0.2))
     timeout_s  = float(llm.get("timeout_s", 30.0))
     retries    = int(llm.get("retries", 2))
+    max_tokens = int(llm["max_tokens"]) if llm.get("max_tokens") is not None else None
+    reasoning_max_tokens = (
+        int(llm["reasoning_max_tokens"]) if llm.get("reasoning_max_tokens") is not None else None
+    )
 
     # Stable run_id across all repetitions of this execution
-    model_slug = model.replace(".", "")  # e.g. "gemini-3.1-flash-lite" -> "gemini-31-flash-lite"
+    # e.g. "gemini-3.1-flash-lite" -> "gemini-31-flash-lite", "qwen3:8b" -> "qwen3-8b",
+    # "qwen/qwen3-8b" (OpenRouter) -> "qwen-qwen3-8b"
+    # (콜론·슬래시는 Windows 파일명에서 불법이므로 반드시 치환)
+    model_slug = model.replace(".", "").replace(":", "-").replace("/", "-")
     run_uuid   = uuid.uuid4().hex[:8]
     run_id     = f"{treatment}-{model_slug}-{run_uuid}"
 
@@ -314,83 +492,101 @@ def run(
 
     total_cases = len(dataset)
 
-    for rep in range(1, repetitions + 1):
-        out_file = output_dir / f"{run_id}-r{rep:02d}.jsonl"
-        print(f"  Rep {rep}/{repetitions} -> {out_file.name}")
+    def build_record(i: int, case: dict, rep: int) -> dict:
+        """단일 케이스를 처리하고 로그 레코드를 만든다. 스레드에서 호출됨 — 공유 상태를 건드리지 않는다."""
+        case_id = case["case_id"]
+        intent  = case["intent_text"]
+        prefix  = f"    [{i+1:02d}/{total_cases}] {case_id:<14}"
 
-        records: list[dict] = []
-
-        for i, case in enumerate(dataset):
-            case_id   = case["case_id"]
-            intent    = case["intent_text"]
-            gold_status = case["gold"]["status"]
-
-            prefix = f"    [{i+1:02d}/{total_cases}] {case_id:<14}"
-
-            if dry_run:
-                print(f"{prefix} [DRY RUN skip]")
-                records.append({
-                    "case_id":       case_id,
-                    "treatment":     treatment,
-                    "model":         model,
-                    "run_id":        run_id,
-                    "repetition":    rep,
-                    "output":        None,
-                    "raw_content":   None,
-                    "latency_ms":    0.0,
-                    "input_tokens":  0,
-                    "output_tokens": 0,
-                    "error_kind":    "dry_run",
-                    "error":         None,
-                })
-                continue
-
-            raw_text, parsed, in_tok, out_tok, latency, err_kind, err_msg = call_gemini(
-                model=model,
-                system=system_prompt,
-                user=intent,
-                temperature=temperature,
-                timeout_s=timeout_s,
-                retries=retries,
-            )
-
-            status_tag = ""
-            if err_kind:
-                status_tag = f"[{err_kind}]"
-            elif parsed is not None:
-                if parsed.get("status") == "rejected":
-                    status_tag = "[rejected]"
-                elif "flows" in parsed:
-                    status_tag = f"[{len(parsed['flows'])} flow(s)]"
-                elif "rules" in parsed:
-                    status_tag = f"[{len(parsed['rules'])} rule(s)]"
-                else:
-                    status_tag = "[ok]"
-
-            print(f"{prefix} {latency:6.0f}ms  in={in_tok} out={out_tok}  {status_tag}")
-
-            records.append({
+        if dry_run:
+            print(f"{prefix} [DRY RUN skip]")
+            return {
                 "case_id":       case_id,
                 "treatment":     treatment,
                 "model":         model,
                 "run_id":        run_id,
                 "repetition":    rep,
-                "output":        parsed,
-                "raw_content":   raw_text,
-                "latency_ms":    round(latency, 1),
-                "input_tokens":  in_tok,
-                "output_tokens": out_tok,
-                "error_kind":    err_kind,
-                "error":         err_msg,
-            })
+                "output":        None,
+                "raw_content":   None,
+                "latency_ms":    0.0,
+                "input_tokens":  0,
+                "output_tokens": 0,
+                "error_kind":    "dry_run",
+                "error":         None,
+            }
 
-            # Rate limit: 4K RPM -> no delay needed (bottleneck is API response ~1.5s)
-            time.sleep(0.0)
+        raw_text, parsed, in_tok, out_tok, latency, err_kind, err_msg = call_llm(
+            model=model,
+            system=system_prompt,
+            user=intent,
+            temperature=temperature,
+            timeout_s=timeout_s,
+            retries=retries,
+            max_tokens=max_tokens,
+            reasoning_max_tokens=reasoning_max_tokens,
+        )
 
-        # Write JSONL for this repetition
+        status_tag = ""
+        if err_kind:
+            status_tag = f"[{err_kind}]"
+        elif parsed is not None:
+            if parsed.get("status") == "rejected":
+                status_tag = "[rejected]"
+            elif "flows" in parsed:
+                status_tag = f"[{len(parsed['flows'])} flow(s)]"
+            elif "rules" in parsed:
+                status_tag = f"[{len(parsed['rules'])} rule(s)]"
+            else:
+                status_tag = "[ok]"
+
+        print(f"{prefix} {latency:6.0f}ms  in={in_tok} out={out_tok}  {status_tag}")
+
+        return {
+            "case_id":       case_id,
+            "treatment":     treatment,
+            "model":         model,
+            "run_id":        run_id,
+            "repetition":    rep,
+            "output":        parsed,
+            "raw_content":   raw_text,
+            "latency_ms":    round(latency, 1),
+            "input_tokens":  in_tok,
+            "output_tokens": out_tok,
+            "error_kind":    err_kind,
+            "error":         err_msg,
+        }
+
+    for rep in range(1, repetitions + 1):
+        out_file = output_dir / f"{run_id}-r{rep:02d}.jsonl"
+        print(f"  Rep {rep}/{repetitions} -> {out_file.name}")
+
+        records: list[dict] = []
+        write_lock = threading.Lock()
+
+        # 케이스마다 즉시 flush — rep 전체가 끝나야 파일에 쓰던 이전 방식은
+        # 중간에 프로세스가 죽으면(레이트리밋 만료, 노트북 종료 등) rep 전체를
+        # 유실시켰다. 이제 케이스 단위로 즉시 디스크에 반영해 중단 시에도
+        # 그때까지의 결과는 남는다. score_exp1.py는 case_id로 매칭하므로
+        # 파일 내 줄 순서(=완료 순서)는 채점에 영향 없다.
         with open(out_file, "w", encoding="utf-8") as f:
-            for rec in records:
-                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            if concurrency <= 1 or dry_run:
+                for i, case in enumerate(dataset):
+                    record = build_record(i, case, rep)
+                    records.append(record)
+                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                    f.flush()
+            else:
+                with ThreadPoolExecutor(max_workers=concurrency) as executor:
+                    futures = {
+                        executor.submit(build_record, i, case, rep): i
+                        for i, case in enumerate(dataset)
+                    }
+                    for future in as_completed(futures):
+                        record = future.result()
+                        with write_lock:
+                            records.append(record)
+                            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                            f.flush()
 
         pass_count = sum(1 for r in records if r["error_kind"] is None)
         fail_count = sum(1 for r in records if r["error_kind"] is not None)
@@ -409,6 +605,7 @@ def main() -> None:
     parser.add_argument("--repetitions", type=int, default=10, help="Number of repetitions (default: 10)")
     parser.add_argument("--output",      default="experiments/eval/logs/", help="Output directory for JSONL files")
     parser.add_argument("--dry-run",     action="store_true", help="Skip API calls; write placeholder records")
+    parser.add_argument("--concurrency", type=int, default=1, help="Parallel in-flight requests per rep (default: 1 = sequential). Only meaningful for cloud APIs (Gemini/OpenRouter) — raise gradually and back off on 429s.")
     args = parser.parse_args()
 
     config_path = ROOT / args.config
@@ -458,6 +655,7 @@ def main() -> None:
         repetitions   = args.repetitions,
         output_dir    = output_dir,
         dry_run       = args.dry_run,
+        concurrency   = args.concurrency,
     )
 
 
