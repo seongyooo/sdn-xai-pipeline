@@ -212,6 +212,28 @@
       </div>
 
       <div id="topo-info-scroll">
+        <div class="topo-info-section" id="section-netpreset">
+          <div class="topo-info-toggle" onclick="toggleInfoSection('section-netpreset')">
+            <span>LIVE TRAFFIC</span><span class="toggle-arrow">▾</span>
+          </div>
+          <div class="topo-info-body">
+            <div style="padding:0 18px 16px">
+              <select id="netpreset-select" class="select" style="margin-bottom:8px"></select>
+              <div style="display:flex;gap:6px;margin-bottom:8px">
+                <button id="netpreset-apply-btn" class="topo-apply-btn" style="flex:1">적용</button>
+                <button id="netpreset-stop-btn" class="topo-cancel-btn" style="flex:1;display:none">중지</button>
+              </div>
+              <div id="netpreset-status" class="netpreset-status netpreset-status-idle">대기</div>
+              <div class="netpreset-legend">
+                <span class="netpreset-legend-item"><i style="background:#10b981"></i>0–60%</span>
+                <span class="netpreset-legend-item"><i style="background:#f59e0b"></i>60–90%</span>
+                <span class="netpreset-legend-item"><i style="background:#ef4444"></i>90%+</span>
+              </div>
+              <div id="netpreset-flows"></div>
+            </div>
+          </div>
+        </div>
+
         <div class="topo-info-section" id="section-metrics">
           <div class="topo-info-toggle" onclick="toggleInfoSection('section-metrics')">
             <span>METRICS</span><span class="toggle-arrow">▾</span>
@@ -296,6 +318,6 @@
   </aside>
 
 </div>
-<script src="app.js?v=33"></script>
+<script src="app.js?v=37"></script>
 </body>
 </html>

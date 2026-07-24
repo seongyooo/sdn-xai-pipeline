@@ -1343,6 +1343,50 @@ text.live-bw {
   pointer-events: none;
 }
 
+/* ── Network Preset (Live Traffic) ────────────────────── */
+.netpreset-status {
+  font-size: 11px;
+  font-family: 'JetBrains Mono', monospace;
+  color: #9ca3af;
+  padding: 4px 0;
+}
+.netpreset-status-running  { color: #10b981; }
+.netpreset-status-starting,
+.netpreset-status-stopping { color: #f59e0b; }
+.netpreset-status-error    { color: #ef4444; }
+
+.netpreset-legend {
+  display: flex;
+  gap: 10px;
+  margin-top: 6px;
+  font-size: 10px;
+  color: #6b7280;
+}
+.netpreset-legend-item { display: flex; align-items: center; gap: 4px; }
+.netpreset-legend-item i {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+#netpreset-flows { margin-top: 10px; display: flex; flex-direction: column; gap: 5px; }
+.netpreset-flow-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  font-family: 'JetBrains Mono', monospace;
+  background: #0a0e1a;
+  border: 1px solid #1f2937;
+  border-radius: 6px;
+  padding: 5px 8px;
+}
+.netpreset-flow-dir { color: #d1d5db; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.netpreset-flow-proto { color: #6b7280; font-size: 9px; margin-left: 4px; }
+.netpreset-flow-bw { flex-shrink: 0; font-weight: 600; }
+
 /* custom topology badge on live mode */
 .custom-topo-badge {
   font-size: 10px;

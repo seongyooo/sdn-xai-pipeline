@@ -9,13 +9,21 @@ import asyncio
 import json
 import queue as std_queue
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Windows 콘솔(cp949 등)에서 파이프라인 곳곳의 한글/이모지 print()가
+# UnicodeEncodeError로 죽는 것을 방지 (uvicorn은 main.py와 달리 stdout을
+# 재설정하지 않음 — 예: "—", "✓/✗" 문자가 포함된 로그에서 실제로 발생했었음).
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 from fastapi import Depends, FastAPI, HTTPException, Request, Security
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import APIKeyHeader
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -122,14 +130,19 @@ def _run_pipeline(req: RunRequest, q: std_queue.Queue) -> None:
     def error(n: int, err: str) -> None:
         emit({"type": "stage", "stage": n, "status": "error", "error": err})
 
-    def finish(decision: str) -> None:
+    def finish(decision: str, reason: str | None = None, deploy_failed: bool = False) -> None:
         result["decision"] = decision
         (config.LOGS_DIR / f"{run_id}.json").write_text(
             json.dumps(result, ensure_ascii=False, indent=2, default=str),
             encoding="utf-8",
         )
+        # 조기 REJECT(예외/거부) 경로는 stage5가 채워지지 않으므로, 프론트 배너가
+        # 빈 사유로 뜨지 않도록 reason을 최소한의 decision_reason으로 대체한다.
+        report = result.get("stage5") or {}
+        if not report and reason:
+            report = {"decision_reason": reason}
         emit({"type": "decision", "decision": decision,
-              "report": result.get("stage5", {})})
+              "report": report, "deploy_failed": deploy_failed})
         emit({"type": "done", "run_id": run_id})
 
     # ── Stage 1: Intent Parsing ───────────────────────────────────────────────
@@ -184,7 +197,7 @@ def _run_pipeline(req: RunRequest, q: std_queue.Queue) -> None:
         )
     except Exception as exc:
         error(1, str(exc))
-        finish("REJECT")
+        finish("REJECT", reason=f"Stage1 초기화 실패: {exc}")
         return
 
     # ── Repair Loop: Stage 1 → 2 → 3 (최대 MAX_REPAIR_ATTEMPTS 재시도) ─────────
@@ -209,7 +222,7 @@ def _run_pipeline(req: RunRequest, q: std_queue.Queue) -> None:
             prediction = parser_obj.parse(req.intent, repair_feedback=repair_feedback)
         except Exception as exc:
             error(1, str(exc))
-            finish("REJECT")
+            finish("REJECT", reason=f"인텐트 파싱 실패: {exc}")
             return
 
         if prediction.status == "rejected":
@@ -219,7 +232,7 @@ def _run_pipeline(req: RunRequest, q: std_queue.Queue) -> None:
             result["stage1"] = {"status": "rejected", "rejection_reason": reason,
                                 "rejection_detail": detail}
             error(1, f"[{reason}] {detail}")
-            finish("REJECT")
+            finish("REJECT", reason=f"[{reason}] {detail}")
             return
 
         if prediction.compound:
@@ -265,7 +278,7 @@ def _run_pipeline(req: RunRequest, q: std_queue.Queue) -> None:
             done(2, flowrule, t2)
         except Exception as exc:
             error(2, str(exc))
-            finish("REJECT")
+            finish("REJECT", reason=f"FlowRule 컴파일 실패: {exc}")
             return
 
         # Stage 3 ──────────────────────────────────────────────────────────────
@@ -308,7 +321,7 @@ def _run_pipeline(req: RunRequest, q: std_queue.Queue) -> None:
             done(3, r3, t3)
         except Exception as exc:
             error(3, str(exc))
-            finish("REJECT")
+            finish("REJECT", reason=f"정적 검증 중 오류: {exc}")
             return
 
         if static_result.passed:
@@ -318,7 +331,7 @@ def _run_pipeline(req: RunRequest, q: std_queue.Queue) -> None:
         if repair_iter >= MAX_REPAIR_ATTEMPTS:
             progress(3, f"[Repair] {MAX_REPAIR_ATTEMPTS}회 재시도 후에도 검증 실패 — REJECT")
             error(3, f"정적 검증 실패 (repair {MAX_REPAIR_ATTEMPTS}회 소진): {static_result.summary()}")
-            finish("REJECT")
+            finish("REJECT", reason=f"정적 검증 실패 (repair {MAX_REPAIR_ATTEMPTS}회 소진): {static_result.summary()}")
             return
 
         repair_feedback = _build_repair_feedback(static_result, repair_iter + 1, MAX_REPAIR_ATTEMPTS)
@@ -327,7 +340,26 @@ def _run_pipeline(req: RunRequest, q: std_queue.Queue) -> None:
 
     # ── Stage 4: Digital Twin ─────────────────────────────────────────────────
     t = start(4, "Digital Twin")
-    if req.skip_twin:
+    live_session = _get_live_session()
+    # status가 "running"일 때만 세션 net을 재사용한다 — "starting"/"stopping"은
+    # net 객체가 기동/종료 중이라 불안정할 수 있어 그대로 스킵한다("error"는 이미
+    # _cleanup_best_effort()로 net이 정리된 뒤라 일반 Digital Twin을 그대로 진행해도
+    # 안전하다).
+    live_net = live_session.net if live_session.status == "running" else None
+    live_custom_data = live_session.topo_data if live_net is not None else None
+
+    if live_session.status in ("starting", "stopping"):
+        progress(
+            4,
+            f"네트워크 프리셋 세션이 {live_session.status} 중 — 네트워크가 아직 안정적이지 "
+            f"않아 Digital Twin을 생략합니다",
+        )
+        from stage4_twin.twin_verifier import TwinResult
+        twin_result = TwinResult(
+            status="skipped",
+            reason=f"라이브 세션 {live_session.status} 중 — Digital Twin 생략",
+        )
+    elif req.skip_twin:
         progress(4, "Skip Digital Twin 옵션 활성화 — 건너뜀")
         from stage4_twin.twin_verifier import TwinResult
         twin_result = TwinResult(status="skipped", reason="skip_twin option")
@@ -341,6 +373,12 @@ def _run_pipeline(req: RunRequest, q: std_queue.Queue) -> None:
             if skip_reason:
                 progress(4, f"환경 조건 미충족 — {skip_reason}")
             else:
+                if live_net is not None:
+                    progress(
+                        4,
+                        f"네트워크 프리셋 라이브 세션(topology={live_session.topology_id}) 위에서 "
+                        f"검증합니다 — 별도 Mininet 기동 없이 지금 보고 있는 그 네트워크를 그대로 씁니다",
+                    )
                 # 테스트 내용 사전 안내 (복합 인텐트는 sub_rules 순회)
                 _is_compound = flowrule.get("intent_action") == "compound"
                 _sub_rules   = flowrule.get("sub_rules", []) if _is_compound else [flowrule]
@@ -379,6 +417,8 @@ def _run_pipeline(req: RunRequest, q: std_queue.Queue) -> None:
                 progress_cb=lambda msg: progress(4, msg),
                 emit_cb=emit,
                 preloaded_flows=req.preloaded_flows,
+                external_net=live_net,
+                external_custom_data=live_custom_data,
             )
             if twin_result.checks:
                 progress(4, "─" * 36)
@@ -426,11 +466,12 @@ def _run_pipeline(req: RunRequest, q: std_queue.Queue) -> None:
         done(5, r5, t)
     except Exception as exc:
         error(5, str(exc))
-        finish("REJECT")
+        finish("REJECT", reason=f"XAI 설명 생성 실패: {exc}")
         return
 
     # ── Stage 6: ONOS Deploy ──────────────────────────────────────────────────
     t = start(6, "ONOS Deploy")
+    deploy_failed = False
     if decision in ("APPROVE", "APPROVE_WITHOUT_TWIN") and not req.skip_deploy:
         try:
             from stage6_deploy.deployer import Deployer
@@ -463,10 +504,12 @@ def _run_pipeline(req: RunRequest, q: std_queue.Queue) -> None:
                         progress(6, f"Flow state 저장 실패 (무시): {fs_exc}")
             else:
                 progress(6, f"배포 실패: {dep.error}")
+                deploy_failed = True
             done(6, r6, t)
         except Exception as exc:
-            r6 = {"error": str(exc)}
+            r6 = {"success": False, "error": str(exc)}
             error(6, str(exc))
+            deploy_failed = True
     elif req.skip_deploy:
         progress(6, "Skip ONOS Deploy 옵션 활성화 — 건너뜀")
         r6 = {"status": "skipped", "reason": "skip_deploy option"}
@@ -479,7 +522,7 @@ def _run_pipeline(req: RunRequest, q: std_queue.Queue) -> None:
               "result": r6, "elapsed": 0})
     result["stage6"] = r6
 
-    finish(decision)
+    finish(decision, deploy_failed=deploy_failed)
 
 
 # ── API Routes ────────────────────────────────────────────────────────────────
@@ -545,18 +588,37 @@ def get_topology():
             if custom:
                 return _custom_topo_as_d3(custom)
 
-        # Build label maps from custom topology so ONOS live data keeps correct labels.
-        # e.g. of:0000000000000005 → "S5" (not sequential "S1")
-        sw_label_map: dict[str, str] = {}   # ONOS device ID → switch label
-        host_label_map: dict[str, str] = {}  # host IP → host label
+        # Build label/position maps from custom topology so ONOS live data keeps
+        # correct labels AND stable ids — e.g. of:0000000000000005 → "S5" (not
+        # sequential "S1"). Hosts especially need this: ONOS's own host id is
+        # "<mac>/<vlan>", completely different from the custom topology's "h1"
+        # used while ONOS has no live devices yet (static fallback below). If we
+        # don't remap back to "h1", the frontend's position cache (keyed by id)
+        # misses on every transition between static↔live and hosts visibly jump
+        # to new positions — looking like an entirely different topology.
+        sw_label_map: dict[str, str] = {}     # ONOS device ID → switch label
+        sw_pos_map: dict[str, tuple] = {}      # ONOS device ID → (x, y)
+        host_id_by_ip: dict[str, str] = {}     # host IP → stable custom host id
+        host_id_by_mac: dict[str, str] = {}    # host MAC(lower) → stable custom host id
+        host_label_by_id: dict[str, str] = {}  # stable custom host id → label
+        host_pos_by_id: dict[str, tuple] = {}  # stable custom host id → (x, y)
         _custom = _load_custom_topology()
         if _custom:
             for _sw in _custom.get("switches", []):
                 _dpid = _sw.get("dpid", "0" * 16)
-                sw_label_map[f"of:{_dpid}"] = _sw.get("label", _sw["id"])
+                _sw_dev_id = f"of:{_dpid}"
+                sw_label_map[_sw_dev_id] = _sw.get("label", _sw["id"])
+                if _sw.get("x") is not None and _sw.get("y") is not None:
+                    sw_pos_map[_sw_dev_id] = (_sw["x"], _sw["y"])
             for _h in _custom.get("hosts", []):
+                _hid = _h["id"]
+                host_label_by_id[_hid] = _h.get("label", _hid)
                 if _h.get("ip"):
-                    host_label_map[_h["ip"]] = _h.get("label", _h["id"])
+                    host_id_by_ip[_h["ip"]] = _hid
+                if _h.get("mac"):
+                    host_id_by_mac[_h["mac"].lower()] = _hid
+                if _h.get("x") is not None and _h.get("y") is not None:
+                    host_pos_by_id[_hid] = (_h["x"], _h["y"])
 
         def _sw_label(dev_id: str) -> str:
             """Custom topology label → else extract number from DPID hex."""
@@ -568,10 +630,22 @@ def get_topology():
             except Exception:
                 return dev_id[-4:] if len(dev_id) > 4 else dev_id
 
-        def _host_label(h: dict) -> str:
+        def _resolve_host_id(h: dict) -> str:
+            """ONOS host id(mac/vlan)를 커스텀 토폴로지의 안정적인 id(h1 등)로
+            역매핑한다. IP 학습 전에도 MAC은 즉시 알려지므로 MAC도 함께 시도.
+            매칭 안 되면(커스텀 토폴로지 밖 호스트) ONOS 원본 id 그대로 사용."""
             ip = (h.get("ipAddresses") or [""])[0]
-            if ip in host_label_map:
-                return host_label_map[ip]
+            if ip in host_id_by_ip:
+                return host_id_by_ip[ip]
+            mac = (h.get("mac") or "").lower()
+            if mac in host_id_by_mac:
+                return host_id_by_mac[mac]
+            return h["id"]
+
+        def _host_label(stable_id: str, h: dict) -> str:
+            if stable_id in host_label_by_id:
+                return host_label_by_id[stable_id]
+            ip = (h.get("ipAddresses") or [""])[0]
             try:
                 return f"H{int(ip.split('.')[-1])}"
             except Exception:
@@ -598,27 +672,76 @@ def get_topology():
                 return "forward"
             return "idle"
 
-        nodes = [
-            {
+        nodes = []
+        for d in devices:
+            node = {
                 "id": d["id"],
                 "label": _sw_label(d["id"]),
                 "type": "switch",
                 "state": dev_state(d["id"], d.get("available", False)),
             }
-            for d in devices
-        ]
+            pos = sw_pos_map.get(d["id"])
+            if pos:
+                node["x"], node["y"] = pos
+            nodes.append(node)
         dev_label = {n["id"]: n["label"] for n in nodes}
 
-        host_nodes = [
-            {
-                "id": h["id"],
-                "label": _host_label(h),
+        host_nodes = []
+        seen_host_ids: set = set()
+        for h in hosts_data:
+            stable_id = _resolve_host_id(h)
+            seen_host_ids.add(stable_id)
+            node = {
+                "id": stable_id,
+                "label": _host_label(stable_id, h),
                 "type": "host",
                 "ip": (h.get("ipAddresses") or [""])[0],
                 "switch": (h.get("locations") or [{}])[0].get("elementId", ""),
             }
-            for h in hosts_data
-        ]
+            pos = host_pos_by_id.get(stable_id)
+            if pos:
+                node["x"], node["y"] = pos
+            host_nodes.append(node)
+
+        # ONOS의 host discovery는 ARP/미학습 패킷을 관찰해야 동작하는데, Mininet을
+        # autoStaticArp=True로 띄우면(build_network_from_custom 기본값) ARP가 아예
+        # 발생하지 않아 실제로 트래픽이 흐르고 flow가 잔뜩 깔려 있어도 hosts()가
+        # 계속 빈 배열로 남는 경우가 실측 확인됨(네트워크 프리셋 라이브 세션에서
+        # 100% 재현). 그래서 ONOS가 못 찾은 호스트도 커스텀 토폴로지에 선언된
+        # 정보(고정 ip/mac/x/y)로 보완한다 — 단, 그 호스트가 붙은 스위치가 지금
+        # 실제로 available일 때만(=해당 토폴로지가 진짜 라이브일 때만) 추가한다.
+        if _custom:
+            available_ids = {d["id"] for d in available} if available else {n["id"] for n in nodes}
+            _sw_ids_set = {sw["id"] for sw in _custom.get("switches", [])}
+            for _h in _custom.get("hosts", []):
+                _hid = _h["id"]
+                if _hid in seen_host_ids:
+                    continue
+                _peer_sw_id = next(
+                    (l["target"] if l["source"] == _hid else l["source"]
+                     for l in _custom.get("links", [])
+                     if (l["source"] == _hid or l["target"] == _hid)
+                     and (l["target"] if l["source"] == _hid else l["source"]) in _sw_ids_set),
+                    None,
+                )
+                if _peer_sw_id is None:
+                    continue
+                _peer_sw = next((sw for sw in _custom.get("switches", []) if sw["id"] == _peer_sw_id), None)
+                if _peer_sw is None:
+                    continue
+                _peer_dev_id = f"of:{_peer_sw.get('dpid', '0' * 16)}"
+                if _peer_dev_id not in available_ids:
+                    continue  # 이 호스트의 스위치가 지금 라이브가 아니면 표시 안 함
+                node = {
+                    "id": _hid,
+                    "label": _h.get("label", _hid),
+                    "type": "host",
+                    "ip": _h.get("ip", ""),
+                    "switch": _peer_dev_id,
+                }
+                if _h.get("x") is not None and _h.get("y") is not None:
+                    node["x"], node["y"] = _h["x"], _h["y"]
+                host_nodes.append(node)
 
         seen: set = set()
         links = []
@@ -729,7 +852,7 @@ def get_custom_topology():
     return data if data else {}
 
 
-@app.post("/api/topology/custom")
+@app.post("/api/topology/custom", dependencies=[Depends(_require_api_key)])
 async def save_custom_topology(request: Request):
     body = await request.json()
     _CUSTOM_TOPO_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -809,7 +932,7 @@ def _build_netcfg(data: dict) -> dict:
     return {"devices": devices, "hosts": hosts_cfg}
 
 
-@app.post("/api/topology/apply")
+@app.post("/api/topology/apply", dependencies=[Depends(_require_api_key)])
 async def apply_topology_to_onos(request: Request):
     """
     저장된 커스텀 토폴로지를 ONOS netcfg API로 푸시한다.
@@ -845,6 +968,131 @@ async def apply_topology_to_onos(request: Request):
         }
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
+
+
+# ── Network Preset (Live Session) 엔드포인트 ─────────────────────────────────
+# LIVE_NETWORK_PRESET_PLAN.md 6-3장. 단일 세션만 지원 — 두 번째 apply는 409.
+
+_TRAFFIC_PRESETS_DIR = _BASE_DIR / "data" / "traffic_presets"
+_live_session = None  # 지연 생성 (LiveNetworkSession import에 stage4_twin 체인이 딸려옴)
+
+
+def _get_live_session():
+    global _live_session
+    if _live_session is None:
+        from stage4_twin.live_session import LiveNetworkSession
+        _live_session = LiveNetworkSession()
+    return _live_session
+
+
+def _load_traffic_preset(topology_id: str, traffic_preset_id: str) -> dict | None:
+    path = _TRAFFIC_PRESETS_DIR / f"{topology_id}_{traffic_preset_id}.json"
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+@app.get("/api/traffic-presets")
+def list_traffic_presets():
+    """토폴로지별 사용 가능한 트래픽 프리셋 목록 (data/traffic_presets/*.json 스캔).
+
+    반환되는 "id"는 apply 요청의 traffic_preset_id로 그대로 쓸 수 있는 접미사
+    (파일명에서 "{topology_id}_" 접두사를 뺀 부분)다.
+    """
+    presets = []
+    for f in sorted(_TRAFFIC_PRESETS_DIR.glob("*.json")):
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        topo_id = data.get("topology_id", "")
+        full_id = data.get("id", f.stem)
+        prefix = f"{topo_id}_"
+        suffix = full_id[len(prefix):] if topo_id and full_id.startswith(prefix) else full_id
+        presets.append({
+            "id": suffix,
+            "topology_id": topo_id,
+            "label": data.get("label", full_id),
+            "flow_count": len(data.get("flows", [])),
+        })
+    return presets
+
+
+class NetworkPresetApplyRequest(BaseModel):
+    topology_id: str
+    traffic_preset_id: str = ""  # 비어있으면 배경 트래픽 없이 토폴로지만 기동
+
+
+@app.post("/api/network-preset/apply", dependencies=[Depends(_require_api_key)])
+async def apply_network_preset(req: NetworkPresetApplyRequest):
+    session = _get_live_session()
+    if session.is_active():
+        raise HTTPException(status_code=409, detail="이미 실행 중인 네트워크 프리셋 세션이 있습니다.")
+
+    from stage4_twin.topology import diamond_topology_data
+
+    is_diamond = req.topology_id == "diamond"
+    topo_data = diamond_topology_data() if is_diamond else _load_custom_topology()
+    if topo_data is None:
+        raise HTTPException(
+            status_code=400,
+            detail="토폴로지를 찾을 수 없습니다 (커스텀 토폴로지를 먼저 저장/적용하세요).",
+        )
+
+    traffic_preset = None
+    if req.traffic_preset_id:
+        traffic_preset = _load_traffic_preset(req.topology_id, req.traffic_preset_id)
+        if traffic_preset is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"트래픽 프리셋을 찾을 수 없습니다: {req.topology_id}_{req.traffic_preset_id}",
+            )
+
+    def _run() -> None:
+        try:
+            session.start(req.topology_id, topo_data, traffic_preset)
+        except Exception as exc:
+            print(f"[network-preset] 세션 시작 실패: {exc}")
+
+    threading.Thread(target=_run, daemon=True).start()
+    return JSONResponse(status_code=202, content={"ok": True, "status": "starting"})
+
+
+@app.get("/api/network-preset/stream")
+async def stream_network_preset():
+    session = _get_live_session()
+
+    async def stream():
+        while True:
+            snap = session.snapshot()
+            yield _sse({"type": "link_stats", **snap})
+            if snap["status"] not in ("starting", "running", "stopping"):
+                break
+            await asyncio.sleep(1.0)
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.post("/api/network-preset/stop", dependencies=[Depends(_require_api_key)])
+async def stop_network_preset():
+    session = _get_live_session()
+    if session.status == "idle":
+        return {"ok": True, "status": "idle"}
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, session.stop)
+    return {"ok": True, "status": session.status}
+
+
+@app.get("/api/network-preset/status")
+def get_network_preset_status():
+    return _get_live_session().snapshot()
 
 
 # ── Flow State 엔드포인트 ─────────────────────────────────────────────────────
@@ -896,7 +1144,7 @@ def get_flow_state(topology_id: str):
     return {**state, "sync_status": sync_status}
 
 
-@app.delete("/api/flow-state/{topology_id}")
+@app.delete("/api/flow-state/{topology_id}", dependencies=[Depends(_require_api_key)])
 def clear_flow_state(topology_id: str):
     """특정 토폴로지의 state 전체 초기화."""
     import flow_state_manager
@@ -906,7 +1154,7 @@ def clear_flow_state(topology_id: str):
     return {"ok": True, "topology_id": topology_id}
 
 
-@app.delete("/api/flow-state/{topology_id}/flows/{flow_index}")
+@app.delete("/api/flow-state/{topology_id}/flows/{flow_index}", dependencies=[Depends(_require_api_key)])
 def delete_flow_state_entry(topology_id: str, flow_index: int):
     """
     특정 flow(인덱스)를 state에서 제거.
@@ -925,7 +1173,7 @@ def delete_flow_state_entry(topology_id: str, flow_index: int):
         device_id = removed.get("deviceId", "")
         priority = removed.get("priority")
         if device_id and priority is not None:
-            client.delete_flows_by_priority(priority)
+            client.delete_flows_by_priority(priority, device_id=device_id)
             onos_deleted = True
     except Exception:
         pass
@@ -950,7 +1198,7 @@ def get_logs():
     return entries
 
 
-@app.delete("/api/logs")
+@app.delete("/api/logs", dependencies=[Depends(_require_api_key)])
 def clear_logs():
     """로그 파일 전체 삭제 (히스토리 초기화)"""
     deleted = 0

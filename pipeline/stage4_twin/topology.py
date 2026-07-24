@@ -65,6 +65,35 @@ def get_expected_device_ids(custom_data: Optional[dict] = None) -> set[str]:
     }
 
 
+def diamond_topology_data() -> dict:
+    """다이아몬드 토폴로지의 custom_topology.json 호환 표현.
+
+    build_network()은 다이아몬드를 하드코딩된 Topo 서브클래스로 직접 만들지만,
+    network_monitor.py 등 custom_data 형식(switches/hosts/links)을 요구하는
+    코드에서 재사용하기 위해 별도로 노출한다.
+    """
+    return {
+        "switches": [
+            {"id": "s1", "dpid": "0000000000000001"},
+            {"id": "s2", "dpid": "0000000000000002"},
+            {"id": "s3", "dpid": "0000000000000003"},
+            {"id": "s4", "dpid": "0000000000000004"},
+        ],
+        "hosts": [
+            {"id": "h1", "ip": "10.0.0.1"},
+            {"id": "h2", "ip": "10.0.0.2"},
+            {"id": "h3", "ip": "10.0.0.3"},
+            {"id": "h4", "ip": "10.0.0.4"},
+        ],
+        "links": [
+            {"id": "l1", "source": "s1", "target": "s2", "bw": 1},
+            {"id": "l2", "source": "s2", "target": "s4", "bw": 1},
+            {"id": "l3", "source": "s1", "target": "s3", "bw": 10},
+            {"id": "l4", "source": "s3", "target": "s4", "bw": 10},
+        ],
+    }
+
+
 def get_test_host_pairs(custom_data: Optional[dict] = None) -> tuple[tuple[str, str], tuple[str, str]]:
     """
     intent_check 및 regression 테스트에 사용할 호스트 쌍 반환.

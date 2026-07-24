@@ -154,6 +154,8 @@ class TwinVerifier:
         progress_cb=None,
         emit_cb=None,
         preloaded_flows: Optional[list] = None,
+        external_net=None,
+        external_custom_data: Optional[dict] = None,
     ) -> TwinResult:
         """
         FlowRule을 Digital Twin에 배포하고 검증한다.
@@ -170,6 +172,14 @@ class TwinVerifier:
             progress_cb:     진행 상황 UI 전달용 콜백 (str → None), 없으면 콘솔만
             preloaded_flows: 사용자가 UI "Load State"로 불러온 기존 FlowRule 목록.
                              배포 전 배경 환경으로 함께 설치됨 (검증 대상은 new_flows만).
+            external_net:    이미 실행 중인 Mininet 객체(LiveNetworkSession.net 등).
+                             지정하면 새 Mininet을 기동/종료하지 않고 이 네트워크에
+                             그대로 검증한다 — 배경 트래픽이 흐르는 중이라도 그
+                             실제 상태에서 검증하는 게 목적이므로 flow 정리도
+                             생략한다. 검증용으로 배포한 flowrule 자체는 평소처럼
+                             끝나면 rollback한다(네트워크는 안 건드림).
+            external_custom_data: external_net을 만들 때 쓴 커스텀 토폴로지 dict.
+                             external_net 지정 시에만 사용(diamond면 None).
 
         Returns:
             TwinResult
@@ -177,6 +187,7 @@ class TwinVerifier:
         self._progress_cb = progress_cb
         self._emit_cb = emit_cb
         preloaded_flows = preloaded_flows or []
+        using_external_net = external_net is not None
         # ── 플랫폼 체크 ────────────────────────────────────────
         skip_reason = self._check_platform()
         if skip_reason:
@@ -197,7 +208,7 @@ class TwinVerifier:
         )
 
         # ── 커스텀 토폴로지 로드 ───────────────────────────
-        custom_data = self._load_custom_topology()
+        custom_data = external_custom_data if using_external_net else self._load_custom_topology()
         expected_ids = get_expected_device_ids(custom_data)
         primary_pair, regression_pair = get_test_host_pairs(custom_data)
 
@@ -299,37 +310,47 @@ class TwinVerifier:
                     pass
             time.sleep(2)
 
-            # ── 3. 기존 flow 정리 ──────────────────────────
-            self._log("③ 기존 flow 정리 중...")
-            client.clear_app_flows()
-            time.sleep(1)
+            if using_external_net:
+                # 라이브 세션의 네트워크를 그대로 재사용 — 별도 Mininet을 새로
+                # 띄우지 않는다. flow 정리도 스킵한다: clear_app_flows()는
+                # org.onosproject.fwd가 설치한 flow까지 지워서 세션의 배경
+                # 트래픽(reactive-forwarding)을 순간적으로 끊어버리기 때문.
+                self._log("③④ 라이브 세션 네트워크 재사용 — 별도 Mininet 기동/flow 정리 생략")
+                net = external_net
+                if preloaded_flows:
+                    self._log(f"③+ 사전 로드된 FlowRule {len(preloaded_flows)}개 환경 구성에 포함")
+            else:
+                # ── 3. 기존 flow 정리 ──────────────────────────
+                self._log("③ 기존 flow 정리 중...")
+                client.clear_app_flows()
+                time.sleep(1)
 
-            # preloaded_flows 개수 로그 (항상 표시)
-            if preloaded_flows:
-                self._log(f"③+ 사전 로드된 FlowRule {len(preloaded_flows)}개 환경 구성에 포함")
+                # preloaded_flows 개수 로그 (항상 표시)
+                if preloaded_flows:
+                    self._log(f"③+ 사전 로드된 FlowRule {len(preloaded_flows)}개 환경 구성에 포함")
 
-            # ── 4. Mininet 토폴로지 시작 ───────────────────
-            self._log("④ 잔존 Mininet 인터페이스 정리 중...")
-            subprocess.run(
-                ["mn", "-c"],
-                capture_output=True,
-                timeout=15,
-            )
+                # ── 4. Mininet 토폴로지 시작 ───────────────────
+                self._log("④ 잔존 Mininet 인터페이스 정리 중...")
+                subprocess.run(
+                    ["mn", "-c"],
+                    capture_output=True,
+                    timeout=15,
+                )
 
-            with suppress_htb_quantum_warning():
-                if custom_data:
-                    sw_cnt = len(custom_data.get("switches", []))
-                    h_cnt  = len(custom_data.get("hosts", []))
-                    self._log(f"④ Mininet 가상 네트워크 시작 중... (커스텀 토폴로지 {sw_cnt}SW/{h_cnt}H)")
-                    net = build_network_from_custom(custom_data, self.controller_ip, self.controller_port)
-                else:
-                    self._log("④ Mininet 가상 네트워크 시작 중... (다이아몬드 기본 토폴로지)")
-                    net = build_network(self.controller_ip, self.controller_port)
-                net.start()
+                with suppress_htb_quantum_warning():
+                    if custom_data:
+                        sw_cnt = len(custom_data.get("switches", []))
+                        h_cnt  = len(custom_data.get("hosts", []))
+                        self._log(f"④ Mininet 가상 네트워크 시작 중... (커스텀 토폴로지 {sw_cnt}SW/{h_cnt}H)")
+                        net = build_network_from_custom(custom_data, self.controller_ip, self.controller_port)
+                    else:
+                        self._log("④ Mininet 가상 네트워크 시작 중... (다이아몬드 기본 토폴로지)")
+                        net = build_network(self.controller_ip, self.controller_port)
+                    net.start()
 
-            self._log("④ ONOS에 가상 스위치 연결 대기 중... (Live Topology에 가상 스위치가 표시됩니다)")
-            client.wait_for_devices(expected_ids, timeout=90.0)
-            time.sleep(3)
+                self._log("④ ONOS에 가상 스위치 연결 대기 중... (Live Topology에 가상 스위치가 표시됩니다)")
+                client.wait_for_devices(expected_ids, timeout=90.0)
+                time.sleep(3)
 
             # ── 5. baseline 연결성 확인 ────────────────────
             self._log(f"⑤ [baseline] FlowRule 배포 전 연결성 확인: {src_host} → {baseline_dst_ip}")
@@ -591,28 +612,43 @@ class TwinVerifier:
 
         finally:
             # ── 8. rollback ───────────────────────────────
+            # 대표 flow(intent_specs[0])의 priority만 지우면 sub-rule마다
+            # priority가 다른 compound/sfc 인텐트에서 나머지 flow가 잔류한다.
+            # deploy_flow_rules(flowrule)로 실제 배포된 flows 전체를 대상으로,
+            # deviceId+priority 조합별로 정확히 삭제한다 (배경 preloaded_flows와
+            # priority가 겹쳐도 collateral 삭제되지 않도록).
             self._log("⑨ FlowRule rollback 중...")
             try:
-                priority = flow.get("priority")
-                if priority is not None:
-                    client.delete_flows_by_priority(priority)
-                else:
+                rollback_targets = {
+                    (f.get("deviceId"), f.get("priority"))
+                    for f in flows
+                    if f.get("deviceId") and f.get("priority") is not None
+                }
+                if rollback_targets:
+                    for device_id, priority in rollback_targets:
+                        client.delete_flows_by_priority(priority, device_id=device_id)
+                elif not using_external_net:
+                    # deviceId/priority가 없는 예외적인 경우의 최종 수단.
+                    # 라이브 세션 네트워크에서는 배경 트래픽까지 지울 수 있어 스킵.
                     client.clear_app_flows()
             except Exception:
                 pass
 
             # ── 9. Mininet 종료 ───────────────────────────
-            if net is not None:
-                self._log("⑩ Mininet 가상 네트워크 종료 중...")
+            if using_external_net:
+                self._log("⑩ 라이브 세션 네트워크 유지 — 종료하지 않음")
+            else:
+                if net is not None:
+                    self._log("⑩ Mininet 가상 네트워크 종료 중...")
+                    try:
+                        net.stop()
+                    except Exception:
+                        pass
+                # 인터페이스 완전 정리 (다음 실행 시 File exists 방지)
                 try:
-                    net.stop()
+                    subprocess.run(["mn", "-c"], capture_output=True, timeout=15)
                 except Exception:
                     pass
-            # 인터페이스 완전 정리 (다음 실행 시 File exists 방지)
-            try:
-                subprocess.run(["mn", "-c"], capture_output=True, timeout=15)
-            except Exception:
-                pass
 
     def _block_rule_check(
         self,

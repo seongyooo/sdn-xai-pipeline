@@ -456,6 +456,7 @@ const state = {
   })),
   decision: null,
   decisionReport: null,
+  deployFailed: false,
   confidenceBreakdown: {},
   history: [],
   refreshIn: 1,
@@ -465,6 +466,447 @@ const state = {
   preloadedFlows: [],             // Load State로 불러온 FlowRule 목록
 };
 
+// ── Network Preset (Live Traffic) 상태 ────────────────────────────────────────
+// LIVE_NETWORK_PRESET_PLAN.md 6-4장. LiveNetworkSession의 apply/stream/stop을
+// 사용해 프리셋을 켜고 실시간 링크 통계를 토폴로지 그래프에 색으로 얹는다.
+
+let allTrafficPresets = [];   // GET /api/traffic-presets 캐시
+let netPresetState = {
+  status: 'idle',              // idle | starting | running | stopping | error
+  topologyId: '',
+  trafficPresetId: '',
+  error: '',
+  linksById: {},                // link_id → {source,target,bw_mbps,throughput_mbps,util_pct,dropped_delta,backlog_bytes}
+  flows: [],                    // [{id,src,dst,proto,target_mbps,actual_mbps}, ...]
+};
+let netPresetStatsMap = new Map(); // "of:dpidA|of:dpidB" → 같은 link 통계 (링크 색칠용)
+let netPresetAnimTimers = [];       // 라이브 트래픽 패킷 애니메이션 타이머 (twinAnimTimers와 별개)
+
+function _fmtBytes(n) {
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
+  return `${n}B`;
+}
+
+function _netPresetPairKey(d) {
+  const a = d.source?.id ?? d.source;
+  const b = d.target?.id ?? d.target;
+  return [a, b].sort().join('|');
+}
+
+function _netPresetTopoDef(topologyId) {
+  return TOPOLOGY_PRESETS[topologyId] || null;
+}
+
+function buildNetPresetStatsMap() {
+  const map = new Map();
+  if (netPresetState.status === 'idle') return map;
+  const topo = _netPresetTopoDef(netPresetState.topologyId);
+  if (!topo) return map;
+  const dpidOf = {};
+  topo.switches.forEach(sw => { dpidOf[sw.id] = `of:${sw.dpid}`; });
+  Object.values(netPresetState.linksById).forEach(l => {
+    const a = dpidOf[l.source], b = dpidOf[l.target];
+    if (!a || !b) return;
+    map.set([a, b].sort().join('|'), l);
+  });
+  return map;
+}
+
+// bwLinkColor/bwLinkStroke를 대체하는 utilization 기반 색상 — null 반환 시
+// 호출부가 기존 bw 기반 스타일로 fall back한다.
+function netPresetLinkColor(d) {
+  if (netPresetState.status !== 'running' && netPresetState.status !== 'starting') return null;
+  const s = netPresetStatsMap.get(_netPresetPairKey(d));
+  if (!s) return null;
+  if (s.util_pct >= 90) return '#ef4444';
+  if (s.util_pct >= 60) return '#f59e0b';
+  if (s.util_pct > 0)   return '#10b981';
+  return '#374151';
+}
+
+function netPresetLinkStroke(d) {
+  if (netPresetState.status !== 'running' && netPresetState.status !== 'starting') return null;
+  const s = netPresetStatsMap.get(_netPresetPairKey(d));
+  if (!s) return null;
+  return 1.5 + Math.min(s.util_pct, 150) / 100 * 2.5;
+}
+
+function netPresetTooltip(d) {
+  const s = netPresetStatsMap.get(_netPresetPairKey(d));
+  if (!s) return null;
+  return `${s.throughput_mbps.toFixed(1)}/${s.bw_mbps}Mbps (${s.util_pct.toFixed(0)}%)\n` +
+         `dropped +${s.dropped_delta}\nbacklog ${s.backlog_bytes}B`;
+}
+
+// 링크 중점에 표시할 실측 처리량 텍스트 ("4.6M") — null이면 호출부가
+// bwLabelsVisible 여부에 따라 정적 용량 텍스트로 fall back한다.
+function netPresetLinkLabel(d) {
+  if (netPresetState.status !== 'running' && netPresetState.status !== 'starting') return null;
+  const s = netPresetStatsMap.get(_netPresetPairKey(d));
+  if (!s) return null;
+  return `${s.throughput_mbps.toFixed(1)}M`;
+}
+
+// 링크 중점 두 번째 줄에 표시할 손실/큐 백로그 텍스트 ("drop+3 q1.2K") —
+// 엄밀한 RTT는 아니고 드롭 카운트 + 큐 백로그 기반 지연 근사치임에 주의
+// (LIVE_NETWORK_PRESET_PLAN.md 6-1장). 문제 없는 링크는 아무것도 안 보여준다.
+function netPresetLinkIssue(d) {
+  const s = netPresetStatsMap.get(_netPresetPairKey(d));
+  if (!s) return null;
+  const parts = [];
+  if (s.dropped_delta > 0) parts.push(`drop+${s.dropped_delta}`);
+  if (s.backlog_bytes > 0) parts.push(`q${_fmtBytes(s.backlog_bytes)}`);
+  return parts.length ? parts.join(' ') : null;
+}
+
+// 현재 렌더된 토폴로지 그래프의 링크 selection에 색/두께/툴팁/대역폭 텍스트를
+// 다시 입힌다. updateTopology()의 다음 폴링을 기다리지 않고 SSE 이벤트마다
+// 즉시 반영하기 위함.
+function applyNetPresetColors() {
+  netPresetStatsMap = buildNetPresetStatsMap();
+  if (!topoZoomLayer) return;
+  const link = topoZoomLayer.select('.links').selectAll('line');
+  link
+    .attr('stroke',       d => netPresetLinkColor(d)  ?? (bwLabelsVisible ? bwLinkColor(d.bw) : '#374151'))
+    .attr('stroke-width', d => netPresetLinkStroke(d) ?? (bwLabelsVisible ? bwLinkStroke(d.bw) : 1.5));
+  link.each(function(d) {
+    const info = netPresetTooltip(d);
+    const sel = d3.select(this);
+    sel.select('title').remove();
+    if (info) sel.append('title').text(info);
+  });
+
+  const showBwLayer = bwLabelsVisible || netPresetStatsMap.size > 0;
+  topoZoomLayer.select('.bw-labels').style('display', showBwLayer ? null : 'none');
+  topoZoomLayer.select('.bw-labels').selectAll('text.live-bw')
+    .attr('fill', d => netPresetLinkColor(d) ?? bwLinkColor(d.bw))
+    .text(d => netPresetLinkLabel(d) ?? (bwLabelsVisible ? `${d.bw}M` : ''));
+  topoZoomLayer.select('.bw-labels').selectAll('text.live-issue')
+    .text(d => netPresetLinkIssue(d) || '');
+
+  updateNetPresetPacketAnim();
+}
+
+// ── 라이브 트래픽 패킷 애니메이션 ──────────────────────────────────────────────
+// twinAnimTimers/.twin-viz와 완전히 별개 레이어·타이머를 써서 Digital Twin
+// 시각화와 동시에 떠 있어도 서로 안 건드린다. 링크 자체의 색/두께는 이미
+// utilization으로 표현하므로, 여기선 highlightPath()를 부르지 않고 패킷 점만
+// spawnPacket()으로 재사용해 찍는다.
+
+function getNetPresetLayer() {
+  if (!topoZoomLayer) return null;
+  let layer = topoZoomLayer.select('.netpreset-viz');
+  if (layer.empty()) layer = topoZoomLayer.append('g').attr('class', 'netpreset-viz');
+  return layer;
+}
+
+function stopNetPresetPacketAnim() {
+  netPresetAnimTimers.forEach(t => clearTimeout(t));
+  netPresetAnimTimers = [];
+  if (topoZoomLayer) topoZoomLayer.select('.netpreset-viz').selectAll('*').remove();
+}
+
+function startNetPresetPacketLoop(path, color) {
+  if (!path || path.length < 2) return;
+  const totalMs = Math.min(1800, path.length * 450);
+  const interval = 650;
+
+  function fire() {
+    if (netPresetState.status !== 'running' && netPresetState.status !== 'starting') return;
+    const layer = getNetPresetLayer();
+    if (!layer) return;
+    spawnPacket(layer, path, color, totalMs, undefined);
+    const t = setTimeout(fire, interval);
+    netPresetAnimTimers.push(t);
+  }
+  fire();
+  const t2 = setTimeout(fire, interval / 2); // 두 번째 스트림 (오프셋)
+  netPresetAnimTimers.push(t2);
+}
+
+// 활성 flow마다 호스트→호스트 경로를 찾아 패킷 루프를 (재)시작한다.
+// 색은 목표 대비 실측 비율로 정해서(netPresetFlowColor), 병목 때문에 밀리는
+// flow는 자연스럽게 빨간 점으로 보인다.
+function updateNetPresetPacketAnim() {
+  stopNetPresetPacketAnim();
+  renderNetPresetFlowBadges();
+  if (netPresetState.status !== 'running' && netPresetState.status !== 'starting') return;
+  if (!currentTopoNodes.length) return;
+
+  netPresetState.flows.forEach(f => {
+    const srcNode = currentTopoNodes.find(n => n.type === 'host' && n.id === f.src);
+    const dstNode = currentTopoNodes.find(n => n.type === 'host' && n.id === f.dst);
+    if (!srcNode || !dstNode) return;
+    const path = findTopoPath(srcNode.id, dstNode.id);
+    if (!path) return;
+    startNetPresetPacketLoop(path, netPresetFlowColor(f));
+  });
+}
+
+// flow별 실측 대역폭을 src-dst 경로 중점에 작은 배지로 표시 — 사이드 패널이
+// 아니라 토폴로지 위에서 바로 보이게 하기 위함(onTwinBw의 배지 패턴 재사용).
+function renderNetPresetFlowBadges() {
+  const layer = getNetPresetLayer();
+  if (!layer) return;
+  layer.selectAll('.netpreset-flow-badge').remove();
+  if (netPresetState.status !== 'running' && netPresetState.status !== 'starting') return;
+
+  netPresetState.flows.forEach(f => {
+    const srcNode = currentTopoNodes.find(n => n.type === 'host' && n.id === f.src);
+    const dstNode = currentTopoNodes.find(n => n.type === 'host' && n.id === f.dst);
+    if (!srcNode || !dstNode) return;
+    const srcPos = nodePositions.get(srcNode.id);
+    const dstPos = nodePositions.get(dstNode.id);
+    if (!srcPos || !dstPos) return;
+
+    const mx = (srcPos.x + dstPos.x) / 2;
+    const my = (srcPos.y + dstPos.y) / 2;
+    const color = netPresetFlowColor(f);
+
+    const badge = layer.append('g')
+      .attr('class', 'netpreset-flow-badge')
+      .attr('transform', `translate(${mx},${my})`);
+    badge.append('rect')
+      .attr('x', -22).attr('y', -8).attr('width', 44).attr('height', 16).attr('rx', 4)
+      .attr('fill', '#0a0e1a').attr('stroke', color).attr('stroke-width', 1);
+    badge.append('text')
+      .attr('text-anchor', 'middle').attr('dy', '0.35em')
+      .attr('font-size', 8).attr('font-family', 'JetBrains Mono, monospace')
+      .attr('fill', color).attr('pointer-events', 'none')
+      .text(`${f.actual_mbps.toFixed(1)}M`);
+  });
+}
+
+function renderNetPresetStatus() {
+  const statusEl = document.getElementById('netpreset-status');
+  const stopBtn  = document.getElementById('netpreset-stop-btn');
+  const applyBtn = document.getElementById('netpreset-apply-btn');
+  if (!statusEl || !stopBtn || !applyBtn) return;
+
+  const labelMap = {
+    idle: '대기', starting: '기동 중… (수십 초 소요될 수 있음)',
+    running: '실행 중', stopping: '정지 중…', error: '오류',
+  };
+  let text = labelMap[netPresetState.status] || netPresetState.status;
+  if (netPresetState.status === 'running' && netPresetState.trafficPresetId) {
+    text += ` — ${netPresetState.trafficPresetId}`;
+  }
+  if (netPresetState.status === 'error' && netPresetState.error) {
+    text += `: ${netPresetState.error}`;
+  }
+  statusEl.textContent = text;
+  statusEl.className = `netpreset-status netpreset-status-${netPresetState.status}`;
+
+  const active = netPresetState.status === 'starting'
+    || netPresetState.status === 'running'
+    || netPresetState.status === 'stopping';
+  stopBtn.style.display  = active ? '' : 'none';
+  applyBtn.style.display = active ? 'none' : '';
+}
+
+function handleNetPresetEvent(ev) {
+  netPresetState.status = ev.status;
+  netPresetState.topologyId = ev.topology_id;
+  netPresetState.trafficPresetId = ev.traffic_preset_id;
+  netPresetState.error = ev.error || '';
+  netPresetState.linksById = {};
+  (ev.links || []).forEach(l => { netPresetState.linksById[l.id] = l; });
+  netPresetState.flows = ev.flows || [];
+  renderNetPresetStatus();
+  renderNetPresetFlows();
+  applyNetPresetColors();
+}
+
+// flow의 실제 대역폭이 목표치 대비 얼마나 못 미치는지로 색 결정
+// (많이 못 미치면 그만큼 다른 flow와 경합 중이라는 신호)
+function netPresetFlowColor(f) {
+  if (!f.target_mbps) return '#9ca3af';
+  const ratio = f.actual_mbps / f.target_mbps;
+  if (ratio >= 0.85) return '#10b981';
+  if (ratio >= 0.5)  return '#f59e0b';
+  return '#ef4444';
+}
+
+function renderNetPresetFlows() {
+  const container = document.getElementById('netpreset-flows');
+  if (!container) return;
+  if (netPresetState.status === 'idle' || netPresetState.flows.length === 0) {
+    container.innerHTML = '';
+    return;
+  }
+  container.innerHTML = netPresetState.flows.map(f => `
+    <div class="netpreset-flow-row">
+      <span class="netpreset-flow-dir">
+        [${escHtml(f.id)}] ${escHtml(f.src)} → ${escHtml(f.dst)}
+        <span class="netpreset-flow-proto">${escHtml((f.proto || '').toUpperCase())}</span>
+      </span>
+      <span class="netpreset-flow-bw" style="color:${netPresetFlowColor(f)}">
+        ${f.actual_mbps.toFixed(1)}/${f.target_mbps.toFixed(0)}Mbps
+      </span>
+    </div>
+  `).join('');
+}
+
+async function startNetworkPresetStream() {
+  try {
+    const resp = await fetch('/api/network-preset/stream');
+    if (!resp.ok || !resp.body) return;
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const chunks = buf.split('\n\n');
+      buf = chunks.pop();
+      for (const chunk of chunks) {
+        const line = chunk.trim();
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const parsed = JSON.parse(line.slice(6));
+          if (parsed.type === 'link_stats') handleNetPresetEvent(parsed);
+        } catch { /* skip malformed */ }
+      }
+    }
+  } catch (err) {
+    console.error('[NetworkPreset] stream error:', err);
+  } finally {
+    renderNetPresetStatus();
+  }
+}
+
+async function loadTrafficPresets() {
+  try {
+    const resp = await fetch('/api/traffic-presets');
+    allTrafficPresets = await resp.json();
+  } catch (err) {
+    console.error('[NetworkPreset] failed to load traffic presets:', err);
+    allTrafficPresets = [];
+  }
+  renderTrafficPresetOptions();
+}
+
+function renderTrafficPresetOptions() {
+  const sel = document.getElementById('netpreset-select');
+  if (!sel) return;
+  sel.innerHTML = '';
+
+  const placeholder = document.createElement('option');
+  placeholder.textContent = '— 트래픽 프리셋 선택 —';
+  placeholder.disabled = true;
+  placeholder.selected = true;
+  sel.appendChild(placeholder);
+
+  const byTopo = {};
+  allTrafficPresets.forEach(p => {
+    (byTopo[p.topology_id] ||= []).push(p);
+  });
+
+  Object.keys(byTopo).sort().forEach(topoId => {
+    const grp = document.createElement('optgroup');
+    grp.label = topoId;
+    byTopo[topoId].forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = `${topoId}::${p.id}`;
+      opt.textContent = p.flow_count > 0 ? `${p.label} (${p.flow_count} flow)` : p.label;
+      opt.dataset.topologyId = topoId;
+      opt.dataset.presetId = p.id;
+      grp.appendChild(opt);
+    });
+    sel.appendChild(grp);
+  });
+}
+
+async function applyNetworkPreset() {
+  const sel = document.getElementById('netpreset-select');
+  const opt = sel && sel.selectedOptions[0];
+  if (!opt || !opt.dataset.topologyId) {
+    alert('트래픽 프리셋을 선택하세요.');
+    return;
+  }
+  const topologyId = opt.dataset.topologyId;
+  const trafficPresetId = opt.dataset.presetId || '';
+
+  const applyBtn = document.getElementById('netpreset-apply-btn');
+  const origText = applyBtn.textContent;
+  applyBtn.disabled = true;
+  applyBtn.textContent = '적용 중…';
+
+  try {
+    // 선택한 트래픽 프리셋의 토폴로지가 현재 그래프와 다르면 먼저 맞춰준다
+    // (기존 "⊞ Presets" 버튼과 동일한 경로로 저장 + ONOS netcfg push).
+    if (state.topologyId !== topologyId && TOPOLOGY_PRESETS[topologyId]) {
+      await applyPreset(topologyId);
+    }
+
+    const resp = await fetch('/api/network-preset/apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ topology_id: topologyId, traffic_preset_id: trafficPresetId }),
+    });
+
+    if (resp.status === 409) {
+      alert('이미 실행 중인 네트워크 프리셋 세션이 있습니다.');
+      return;
+    }
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => ({}));
+      alert(`적용 실패: ${body.detail || resp.status}`);
+      return;
+    }
+
+    netPresetState.status = 'starting';
+    netPresetState.topologyId = topologyId;
+    netPresetState.trafficPresetId = trafficPresetId;
+    netPresetState.error = '';
+    renderNetPresetStatus();
+    startNetworkPresetStream();
+  } catch (err) {
+    console.error('[NetworkPreset] apply failed:', err);
+  } finally {
+    applyBtn.disabled = false;
+    applyBtn.textContent = origText;
+  }
+}
+
+async function stopNetworkPreset() {
+  const stopBtn = document.getElementById('netpreset-stop-btn');
+  const origText = stopBtn.textContent;
+  stopBtn.disabled = true;
+  stopBtn.textContent = '정지 중…';
+  try {
+    await fetch('/api/network-preset/stop', { method: 'POST' });
+  } catch (err) {
+    console.error('[NetworkPreset] stop failed:', err);
+  } finally {
+    stopBtn.disabled = false;
+    stopBtn.textContent = origText;
+  }
+}
+
+async function initNetworkPresetPanel() {
+  const applyBtn = document.getElementById('netpreset-apply-btn');
+  const stopBtn  = document.getElementById('netpreset-stop-btn');
+  if (applyBtn) applyBtn.addEventListener('click', applyNetworkPreset);
+  if (stopBtn)  stopBtn.addEventListener('click', stopNetworkPreset);
+
+  await loadTrafficPresets();
+
+  // 새로고침으로 페이지가 다시 열렸을 때 이미 실행 중인 세션을 이어서 표시
+  try {
+    const resp = await fetch('/api/network-preset/status');
+    const data = await resp.json();
+    handleNetPresetEvent({ type: 'link_stats', ...data });
+    if (data.status === 'starting' || data.status === 'running') {
+      startNetworkPresetStream();
+    }
+  } catch (err) {
+    console.error('[NetworkPreset] status fetch failed:', err);
+  }
+}
+
 // ── Pipeline ──────────────────────────────────────────────────────────────────
 
 async function runPipeline() {
@@ -473,6 +915,7 @@ async function runPipeline() {
   state.running = true;
   state.decision = null;
   state.decisionReport = null;
+  state.deployFailed = false;
   state.confidenceBreakdown = {};
   state.stages.forEach(s => {
     s.status = 'idle'; s.elapsed = null; s.result = null; s.expanded = false; s.progress_log = [];
@@ -595,6 +1038,7 @@ function handleSSEEvent(ev) {
   } else if (ev.type === 'decision') {
     state.decision = ev.decision;
     state.decisionReport = ev.report;
+    state.deployFailed = !!ev.deploy_failed;
     state.confidenceBreakdown = (ev.report && ev.report.confidence_breakdown) || {};
     // REJECT 시 실패한 단계 모두 자동 펼치기
     if (ev.decision === 'REJECT') {
@@ -1067,7 +1511,8 @@ function renderDecision() {
   const el = document.getElementById('decision-banner');
   if (!state.decision) { el.style.display = 'none'; return; }
 
-  const approve = state.decision.includes('APPROVE');
+  const deployFailed = !!state.deployFailed;
+  const approve = state.decision.includes('APPROVE') && !deployFailed;
   const color   = approve ? '#10b981' : '#ef4444';
   const bgColor = approve ? '#0f1c16' : '#1c0f0f';
   const icon    = approve
@@ -1076,7 +1521,11 @@ function renderDecision() {
 
   const report = state.decisionReport || {};
   // XAIReport.to_dict() fields: decision_reason, ir_summary, static_summary, twin_summary
-  const reason = report.decision_reason || report.ir_summary || '';
+  const baseReason = report.decision_reason || report.ir_summary || '';
+  const reason = deployFailed
+    ? `⚠ ONOS 배포 실패 — 검증은 통과했으나 실제 배포가 반영되지 않았습니다. ${baseReason}`.trim()
+    : baseReason;
+  const title = deployFailed ? `${state.decision} (배포 실패)` : state.decision;
 
   el.style.display = 'flex';
   el.style.background = bgColor;
@@ -1084,7 +1533,7 @@ function renderDecision() {
   el.innerHTML = `
     <div class="decision-icon" style="background:${color}">${icon}</div>
     <div>
-      <div class="decision-title" style="color:${color}">${state.decision}</div>
+      <div class="decision-title" style="color:${color}">${title}</div>
       <div class="decision-reason">${reason}</div>
     </div>
   `;
@@ -1949,17 +2398,25 @@ function updateTopology(data) {
     .force('center',    d3.forceCenter(w / 2, h / 2))
     .force('collision', d3.forceCollide(24));
 
-  // Links — BW 표시 ON일 때만 대역폭 색상·두께 적용
+  // Links — 네트워크 프리셋 세션이 활성화돼 있으면 utilization 기반 색상이
+  // 우선하고, 아니면 BW 표시 ON일 때만 대역폭 색상·두께 적용
   const link = topoZoomLayer.select('.links')
     .selectAll('line')
     .data(links, d => `${d.source?.id ?? d.source}-${d.target?.id ?? d.target}`)
     .join('line')
-    .attr('stroke',       d => bwLabelsVisible ? bwLinkColor(d.bw) : '#374151')
-    .attr('stroke-width', d => bwLabelsVisible ? bwLinkStroke(d.bw) : 1.5);
+    .attr('stroke',       d => netPresetLinkColor(d)  ?? (bwLabelsVisible ? bwLinkColor(d.bw) : '#374151'))
+    .attr('stroke-width', d => netPresetLinkStroke(d) ?? (bwLabelsVisible ? bwLinkStroke(d.bw) : 1.5));
+  link.each(function(d) {
+    const info = netPresetTooltip(d);
+    const sel = d3.select(this);
+    sel.select('title').remove();
+    if (info) sel.append('title').text(info);
+  });
 
-  // Bandwidth labels — 링크 중점에 "NNM" 텍스트 표시
+  // Bandwidth labels — 링크 중점에 텍스트 표시. 네트워크 프리셋 세션이 켜져
+  // 있으면 실측 처리량("4.6M")을, 아니면 BW 표시 ON일 때 정적 용량("10M")을 보여준다.
   const bwLabelGroup = topoZoomLayer.select('.bw-labels')
-    .style('display', bwLabelsVisible ? null : 'none');
+    .style('display', (bwLabelsVisible || netPresetStatsMap.size > 0) ? null : 'none');
   const bwLabel = bwLabelGroup
     .selectAll('text.live-bw')
     .data(links.filter(d => d.bw != null),
@@ -1970,8 +2427,22 @@ function updateTopology(data) {
     .attr('font-size', 8)
     .attr('font-family', 'JetBrains Mono, monospace')
     .attr('pointer-events', 'none')
-    .attr('fill', d => bwLinkColor(d.bw))
-    .text(d => `${d.bw}M`);
+    .attr('fill', d => netPresetLinkColor(d) ?? bwLinkColor(d.bw))
+    .text(d => netPresetLinkLabel(d) ?? (bwLabelsVisible ? `${d.bw}M` : ''));
+
+  // 손실/큐 백로그 — 대역폭 텍스트 바로 아래 작은 줄 (문제 있는 링크만 표시)
+  const issueLabel = bwLabelGroup
+    .selectAll('text.live-issue')
+    .data(links.filter(d => d.bw != null),
+          d => `issue-${d.source?.id ?? d.source}-${d.target?.id ?? d.target}`)
+    .join('text')
+    .attr('class', 'live-issue')
+    .attr('text-anchor', 'middle')
+    .attr('font-size', 7)
+    .attr('font-family', 'JetBrains Mono, monospace')
+    .attr('pointer-events', 'none')
+    .attr('fill', '#ef4444')
+    .text(d => netPresetLinkIssue(d) || '');
 
   // Nodes
   const drag = d3.drag()
@@ -2035,6 +2506,9 @@ function updateTopology(data) {
     bwLabel
       .attr('x', d => (d.source.x + d.target.x) / 2)
       .attr('y', d => (d.source.y + d.target.y) / 2 - 4);
+    issueLabel
+      .attr('x', d => (d.source.x + d.target.x) / 2)
+      .attr('y', d => (d.source.y + d.target.y) / 2 + 7);
     nodeG.attr('transform', d => {
       // clamp to svg bounds
       const x = Math.max(20, Math.min(cw - 20, d.x));
@@ -2493,13 +2967,7 @@ function init() {
     } else {
       btn.classList.remove('active');
     }
-    if (topoZoomLayer) {
-      topoZoomLayer.select('.bw-labels').style('display', bwLabelsVisible ? null : 'none');
-      // 링크 색상·두께도 즉시 업데이트
-      topoZoomLayer.select('.links').selectAll('line')
-        .attr('stroke',       d => bwLabelsVisible ? bwLinkColor(d.bw) : '#374151')
-        .attr('stroke-width', d => bwLabelsVisible ? bwLinkStroke(d.bw) : 1.5);
-    }
+    applyNetPresetColors(); // 링크 색상·두께·대역폭 텍스트 즉시 업데이트
   });
 
   // Topology editor controls
@@ -2539,6 +3007,9 @@ function init() {
 
   // Topology presets
   initTopoPresets();
+
+  // Network preset (live traffic) panel
+  initNetworkPresetPanel();
 
   // Panel resizer
   initPanelResizer();
